@@ -41,6 +41,7 @@ samples <- data.frame(
   tissue = c("lymph_node", "lymph_node", "meninges", "meninges"),
   stringsAsFactors = FALSE
 )
+samples$cell_prefix <- samples$sample_id
 
 ################################################################################
 # 2. General helpers
@@ -93,8 +94,35 @@ read_cellranger_h5_matrix <- function(h5_file) {
 restrict_to_called_barcodes <- function(mat, barcode_file = NULL) {
   if (is.null(barcode_file) || !file.exists(barcode_file)) return(mat)
 
-  barcode_df <- read.csv(barcode_file, header = TRUE, stringsAsFactors = FALSE)
-  barcode_vec <- unique(as.character(barcode_df[[1]]))
+  barcode_lines <- readLines(barcode_file, n = 2L, warn = FALSE)
+  barcode_vec <- character()
+
+  if (length(barcode_lines) >= 1) {
+    first_fields <- strsplit(barcode_lines[[1]], ",", fixed = TRUE)[[1]]
+
+    if (length(first_fields) > 5 && identical(first_fields[[1]], "")) {
+      barcode_vec <- first_fields[-1]
+    }
+  }
+
+  if (length(barcode_vec) == 0) {
+    barcode_df <- read.csv(
+      barcode_file,
+      header = TRUE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+
+    if (ncol(barcode_df) == 0) {
+      warning("Barcode file has no columns; returning original matrix.")
+      return(mat)
+    }
+
+    barcode_vec <- barcode_df[[1]]
+  }
+
+  barcode_vec <- unique(trimws(as.character(barcode_vec)))
+  barcode_vec <- barcode_vec[nzchar(barcode_vec)]
   barcode_keep <- intersect(colnames(mat), barcode_vec)
 
   if (length(barcode_keep) == 0) {
@@ -103,6 +131,34 @@ restrict_to_called_barcodes <- function(mat, barcode_file = NULL) {
   }
 
   mat[, barcode_keep, drop = FALSE]
+}
+
+parse_10x_bool <- function(x) {
+  tolower(as.character(x)) %in% c("true", "t", "1")
+}
+
+add_percent_ribo <- function(obj) {
+  obj[["percent.ribo"]] <- PercentageFeatureSet(
+    obj,
+    pattern = "^(Rpl|Rps|RPL|RPS|Mrpl|Mrps|MRPL|MRPS)"
+  )
+  obj
+}
+
+extract_10x_barcode <- function(x) {
+  out <- sub(
+    ".*?([ACGTN]+-[0-9]+)(?:_[0-9]+)?$",
+    "\\1",
+    x,
+    perl = TRUE
+  )
+
+  unchanged <- identical(length(out), length(x)) && all(out == x)
+  if (unchanged) {
+    out <- sub("(_[0-9]+)$", "", x, perl = TRUE)
+  }
+
+  out
 }
 
 get_scrna_paths <- function(path.data.scrna, sample_id) {
@@ -209,135 +265,324 @@ get_vdj_paths <- function(path.data.vdj, sample_id, vdj_id, chain_dir) {
   path_table[[1]]
 }
 
-read_optional_csv <- function(path) {
-  if (is.na(path) || !file.exists(path) || file.info(path)$isdir) return(NULL)
-  read.csv(path, stringsAsFactors = FALSE)
-}
+summarize_vdj_metadata <- function(path.data.vdj,
+                                   sample_id,
+                                   vdj_id,
+                                   cell_prefix = sample_id,
+                                   receptor = c("BCR", "TCR")) {
+  receptor <- match.arg(receptor)
+  prefix <- tolower(receptor)
 
-warn_missing_vdj_files <- function(paths, sample_id, chain_label) {
-  named_paths <- c(
-    filtered_contigs = paths$filtered_contigs,
-    all_contigs = paths$all_contigs,
-    clonotypes = paths$clonotypes
+  if (receptor == "BCR") {
+    vdj_paths <- get_vdj_paths(path.data.vdj, sample_id, vdj_id, "vdj_b")
+    chain_pattern <- "^IG"
+  } else {
+    vdj_paths <- get_vdj_paths(path.data.vdj, sample_id, vdj_id, "vdj_t")
+    chain_pattern <- "^TR"
+  }
+
+  contig_file <- NULL
+  if (!is.na(vdj_paths$filtered_contigs) && file.exists(vdj_paths$filtered_contigs)) {
+    contig_file <- vdj_paths$filtered_contigs
+  } else if (!is.na(vdj_paths$all_contigs) && file.exists(vdj_paths$all_contigs)) {
+    contig_file <- vdj_paths$all_contigs
+  }
+
+  if (is.null(contig_file)) {
+    warning("Missing ", receptor, " contig annotation CSV for ", sample_id)
+    return(data.frame())
+  }
+
+  contig_df <- read.csv(contig_file, stringsAsFactors = FALSE)
+  if (nrow(contig_df) == 0) return(data.frame())
+
+  required_cols <- c(
+    "barcode", "is_cell", "high_confidence", "productive", "chain",
+    "raw_clonotype_id", "raw_consensus_id", "cdr3_nt", "cdr3",
+    "v_gene", "d_gene", "j_gene", "c_gene"
   )
-  missing <- names(named_paths)[is.na(named_paths) | !file.exists(named_paths)]
-
-  if (length(missing) > 0) {
+  missing_cols <- setdiff(required_cols, colnames(contig_df))
+  if (length(missing_cols) > 0) {
     warning(
-      "Missing ", chain_label, " VDJ file(s) for ", sample_id, ": ",
-      paste(missing, collapse = ", "),
-      ". Directory used: ", paths$vdj_dir
+      "Missing expected ", receptor, " column(s) for ", sample_id, ": ",
+      paste(missing_cols, collapse = ", ")
     )
+    for (col in missing_cols) contig_df[[col]] <- NA
   }
+
+  contig_df <- contig_df |>
+    dplyr::mutate(
+      barcode_raw = barcode,
+      barcode_prefixed = paste(cell_prefix, barcode, sep = "_"),
+      is_cell = parse_10x_bool(is_cell),
+      high_confidence = parse_10x_bool(high_confidence),
+      productive = parse_10x_bool(productive),
+      raw_clonotype_id = dplyr::na_if(raw_clonotype_id, ""),
+      raw_consensus_id = dplyr::na_if(raw_consensus_id, "")
+    ) |>
+    dplyr::filter(
+      is_cell,
+      high_confidence,
+      productive,
+      grepl(chain_pattern, chain),
+      !is.na(raw_clonotype_id)
+    ) |>
+    dplyr::mutate(
+      sequence_signature = ifelse(
+        !is.na(raw_consensus_id),
+        raw_consensus_id,
+        paste(chain, cdr3_nt, sep = ":")
+      )
+    )
+
+  if (nrow(contig_df) == 0) return(data.frame())
+
+  barcode_meta <- contig_df |>
+    dplyr::arrange(barcode_raw, chain) |>
+    dplyr::group_by(barcode_raw) |>
+    dplyr::summarise(
+      sample_id = sample_id,
+      barcode_prefixed = dplyr::first(barcode_prefixed),
+      chain_count = dplyr::n(),
+      chains = paste(sort(unique(chain)), collapse = ";"),
+      clonotype_id = paste(sort(unique(raw_clonotype_id)), collapse = "|"),
+      multiple_clonotypes = dplyr::n_distinct(raw_clonotype_id) > 1,
+      subclonotype_id = paste(sort(unique(sequence_signature)), collapse = "|"),
+      v_genes = paste(sort(unique(v_gene[v_gene != "None"])), collapse = ";"),
+      d_genes = paste(sort(unique(d_gene[d_gene != "None"])), collapse = ";"),
+      j_genes = paste(sort(unique(j_gene[j_gene != "None"])), collapse = ";"),
+      isotypes = paste(sort(unique(c_gene[c_gene != "None"])), collapse = ";"),
+      cdr3s_aa = paste(sort(unique(paste(chain, cdr3, sep = ":"))), collapse = ";"),
+      cdr3s_nt = paste(sort(unique(paste(chain, cdr3_nt, sep = ":"))), collapse = ";"),
+      .groups = "drop"
+    )
+
+  receptor_fields <- c(
+    "chain_count", "chains", "clonotype_id", "multiple_clonotypes",
+    "subclonotype_id", "v_genes", "d_genes", "j_genes", "isotypes",
+    "cdr3s_aa", "cdr3s_nt"
+  )
+  rename_idx <- match(receptor_fields, names(barcode_meta))
+  names(barcode_meta)[rename_idx] <- paste0(prefix, "_", receptor_fields)
+
+  if (!is.na(vdj_paths$clonotypes) && file.exists(vdj_paths$clonotypes)) {
+    clonotype_df <- read.csv(vdj_paths$clonotypes, stringsAsFactors = FALSE)
+    expected_clonotype_cols <- c("clonotype_id", "frequency", "proportion", "cdr3s_aa", "cdr3s_nt")
+    if (all(expected_clonotype_cols %in% colnames(clonotype_df))) {
+      clonotype_df <- clonotype_df |>
+        dplyr::rename(
+          !!paste0(prefix, "_clonotype_id") := clonotype_id,
+          !!paste0(prefix, "_clonotype_frequency_cellranger") := frequency,
+          !!paste0(prefix, "_clonotype_proportion_cellranger") := proportion,
+          !!paste0(prefix, "_clonotype_cdr3s_aa_cellranger") := cdr3s_aa,
+          !!paste0(prefix, "_clonotype_cdr3s_nt_cellranger") := cdr3s_nt
+        )
+
+      barcode_meta <- barcode_meta |>
+        dplyr::left_join(clonotype_df, by = paste0(prefix, "_clonotype_id"))
+    }
+  }
+
+  barcode_meta
 }
 
-summarize_vdj_by_barcode <- function(filtered_contigs,
-                                     sample_short,
-                                     chain_label) {
-  if (is.null(filtered_contigs) || nrow(filtered_contigs) == 0) {
-    return(data.frame(cell = character(), stringsAsFactors = FALSE))
+summarize_bcr_metadata <- function(path.data.vdj, sample_id, vdj_id, cell_prefix = sample_id) {
+  summarize_vdj_metadata(
+    path.data.vdj = path.data.vdj,
+    sample_id = sample_id,
+    vdj_id = vdj_id,
+    cell_prefix = cell_prefix,
+    receptor = "BCR"
+  )
+}
+
+summarize_tcr_metadata <- function(path.data.vdj, sample_id, vdj_id, cell_prefix = sample_id) {
+  summarize_vdj_metadata(
+    path.data.vdj = path.data.vdj,
+    sample_id = sample_id,
+    vdj_id = vdj_id,
+    cell_prefix = cell_prefix,
+    receptor = "TCR"
+  )
+}
+
+ensure_vdj_metadata_columns <- function(meta, prefix) {
+  expected <- c(
+    "barcode_raw", "sample_id", "barcode_prefixed",
+    paste0(prefix, "_chain_count"),
+    paste0(prefix, "_chains"),
+    paste0(prefix, "_clonotype_id"),
+    paste0(prefix, "_multiple_clonotypes"),
+    paste0(prefix, "_subclonotype_id"),
+    paste0(prefix, "_v_genes"),
+    paste0(prefix, "_d_genes"),
+    paste0(prefix, "_j_genes"),
+    paste0(prefix, "_isotypes"),
+    paste0(prefix, "_cdr3s_aa"),
+    paste0(prefix, "_cdr3s_nt"),
+    paste0(prefix, "_clonotype_frequency_cellranger"),
+    paste0(prefix, "_clonotype_proportion_cellranger"),
+    paste0(prefix, "_clonotype_cdr3s_aa_cellranger"),
+    paste0(prefix, "_clonotype_cdr3s_nt_cellranger")
+  )
+
+  if (nrow(meta) == 0 && ncol(meta) == 0) {
+    meta <- data.frame(barcode_raw = character(), sample_id = character())
   }
 
-  if (!"barcode" %in% colnames(filtered_contigs)) {
-    warning("VDJ table has no barcode column for ", sample_short, " ", chain_label)
-    return(data.frame(cell = character(), stringsAsFactors = FALSE))
-  }
+  missing <- setdiff(expected, colnames(meta))
+  for (col in missing) meta[[col]] <- NA
+  meta[, expected, drop = FALSE]
+}
 
-  clonotype_col <- intersect(
-    c("raw_clonotype_id", "clonotype_id", "clone_id"),
-    colnames(filtered_contigs)
-  )
-  clonotype_col <- if (length(clonotype_col) > 0) clonotype_col[[1]] else NA_character_
-
-  cdr3_col <- intersect(
-    c("cdr3", "cdr3_aa"),
-    colnames(filtered_contigs)
-  )
-  cdr3_col <- if (length(cdr3_col) > 0) cdr3_col[[1]] else NA_character_
-
-  contigs <- filtered_contigs
-  contigs$cell <- paste(sample_short, contigs$barcode, sep = "_")
-
-  split_contigs <- split(contigs, contigs$cell)
-  out <- lapply(split_contigs, function(x) {
-    data.frame(
-      cell = x$cell[[1]],
-      contig_count = nrow(x),
-      clonotype_id = if (is.na(clonotype_col)) NA_character_ else paste(unique(x[[clonotype_col]]), collapse = ";"),
-      cdr3 = if (is.na(cdr3_col)) NA_character_ else paste(unique(x[[cdr3_col]]), collapse = ";"),
-      stringsAsFactors = FALSE
+add_bcr_tcr_metadata_to_object <- function(obj,
+                                           sample_metadata,
+                                           path.data.vdj,
+                                           remove_missing_bcr = TRUE,
+                                           remove_missing_tcr = FALSE) {
+  bcr_meta_list <- lapply(seq_len(nrow(sample_metadata)), function(i) {
+    summarize_bcr_metadata(
+      path.data.vdj = path.data.vdj,
+      sample_id = sample_metadata$sample_id[i],
+      vdj_id = sample_metadata$vdj_id[i],
+      cell_prefix = sample_metadata$cell_prefix[i]
     )
   })
 
-  out <- do.call(rbind, out)
-  colnames(out) <- c(
-    "cell",
-    paste0(chain_label, "_contig_count"),
-    paste0(chain_label, "_clonotype_id"),
-    paste0(chain_label, "_cdr3")
-  )
-  rownames(out) <- NULL
-  out
-}
-
-read_sample_vdj <- function(path.data.vdj, sample_id, vdj_id, sample_short) {
-  bcr_paths <- get_vdj_paths(path.data.vdj, sample_id, vdj_id, "vdj_b")
-  tcr_paths <- get_vdj_paths(path.data.vdj, sample_id, vdj_id, "vdj_t")
-  warn_missing_vdj_files(bcr_paths, sample_id, "BCR")
-  warn_missing_vdj_files(tcr_paths, sample_id, "TCR")
-
-  bcr <- list(
-    paths = bcr_paths,
-    filtered_contigs = read_optional_csv(bcr_paths$filtered_contigs),
-    all_contigs = read_optional_csv(bcr_paths$all_contigs),
-    clonotypes = read_optional_csv(bcr_paths$clonotypes)
-  )
-  tcr <- list(
-    paths = tcr_paths,
-    filtered_contigs = read_optional_csv(tcr_paths$filtered_contigs),
-    all_contigs = read_optional_csv(tcr_paths$all_contigs),
-    clonotypes = read_optional_csv(tcr_paths$clonotypes)
-  )
-
-  bcr_meta <- summarize_vdj_by_barcode(bcr$filtered_contigs, sample_short, "bcr")
-  tcr_meta <- summarize_vdj_by_barcode(tcr$filtered_contigs, sample_short, "tcr")
-
-  meta <- merge(bcr_meta, tcr_meta, by = "cell", all = TRUE)
-  if (nrow(meta) > 0) {
-    required_cols <- c(
-      "bcr_contig_count", "bcr_clonotype_id", "bcr_cdr3",
-      "tcr_contig_count", "tcr_clonotype_id", "tcr_cdr3"
+  tcr_meta_list <- lapply(seq_len(nrow(sample_metadata)), function(i) {
+    summarize_tcr_metadata(
+      path.data.vdj = path.data.vdj,
+      sample_id = sample_metadata$sample_id[i],
+      vdj_id = sample_metadata$vdj_id[i],
+      cell_prefix = sample_metadata$cell_prefix[i]
     )
-    missing_cols <- setdiff(required_cols, colnames(meta))
-    for (col in missing_cols) meta[[col]] <- NA
+  })
 
-    meta$has_bcr <- !is.na(meta$bcr_contig_count) & meta$bcr_contig_count > 0
-    meta$has_tcr <- !is.na(meta$tcr_contig_count) & meta$tcr_contig_count > 0
-    rownames(meta) <- meta$cell
-    meta$cell <- NULL
+  bcr_meta <- dplyr::bind_rows(bcr_meta_list)
+  tcr_meta <- dplyr::bind_rows(tcr_meta_list)
+  bcr_meta <- ensure_vdj_metadata_columns(bcr_meta, "bcr")
+  tcr_meta <- ensure_vdj_metadata_columns(tcr_meta, "tcr")
+
+  meta_df <- obj@meta.data
+  meta_df$barcode <- rownames(meta_df)
+  meta_df$barcode_raw <- extract_10x_barcode(meta_df$barcode)
+
+  meta_df <- meta_df |>
+    dplyr::left_join(bcr_meta, by = c("barcode_raw", "sample_id")) |>
+    dplyr::left_join(tcr_meta, by = c("barcode_raw", "sample_id")) |>
+    dplyr::mutate(
+      has_bcr = !is.na(bcr_clonotype_id),
+      has_tcr = !is.na(tcr_clonotype_id)
+    )
+
+  bcr_clone_size_df <- meta_df |>
+    dplyr::filter(has_bcr) |>
+    dplyr::count(sample_id, bcr_clonotype_id, name = "bcr_clonotype_size")
+
+  bcr_subclone_size_df <- meta_df |>
+    dplyr::filter(has_bcr) |>
+    dplyr::count(
+      sample_id,
+      bcr_clonotype_id,
+      bcr_subclonotype_id,
+      name = "bcr_subclonotype_size"
+    )
+
+  tcr_clone_size_df <- meta_df |>
+    dplyr::filter(has_tcr) |>
+    dplyr::count(sample_id, tcr_clonotype_id, name = "tcr_clonotype_size")
+
+  tcr_subclone_size_df <- meta_df |>
+    dplyr::filter(has_tcr) |>
+    dplyr::count(
+      sample_id,
+      tcr_clonotype_id,
+      tcr_subclonotype_id,
+      name = "tcr_subclonotype_size"
+    )
+
+  meta_df <- meta_df |>
+    dplyr::left_join(
+      bcr_clone_size_df,
+      by = c("sample_id", "bcr_clonotype_id")
+    ) |>
+    dplyr::left_join(
+      bcr_subclone_size_df,
+      by = c("sample_id", "bcr_clonotype_id", "bcr_subclonotype_id")
+    ) |>
+    dplyr::left_join(
+      tcr_clone_size_df,
+      by = c("sample_id", "tcr_clonotype_id")
+    ) |>
+    dplyr::left_join(
+      tcr_subclone_size_df,
+      by = c("sample_id", "tcr_clonotype_id", "tcr_subclonotype_id")
+    ) |>
+    dplyr::mutate(
+      bcr_expansion_status = dplyr::case_when(
+        !has_bcr ~ "missing_bcr",
+        bcr_clonotype_size >= 2 ~ "expanded",
+        TRUE ~ "unexpanded"
+      ),
+      bcr_subclonotype_uid = dplyr::if_else(
+        has_bcr,
+        paste(sample_id, bcr_clonotype_id, bcr_subclonotype_id, sep = "::"),
+        NA_character_
+      ),
+      bcr_clonotype_uid = dplyr::if_else(
+        has_bcr,
+        paste(sample_id, bcr_clonotype_id, sep = "::"),
+        NA_character_
+      ),
+      tcr_expansion_status = dplyr::case_when(
+        !has_tcr ~ "missing_tcr",
+        tcr_clonotype_size >= 2 ~ "expanded",
+        TRUE ~ "unexpanded"
+      ),
+      tcr_subclonotype_uid = dplyr::if_else(
+        has_tcr,
+        paste(sample_id, tcr_clonotype_id, tcr_subclonotype_id, sep = "::"),
+        NA_character_
+      ),
+      tcr_clonotype_uid = dplyr::if_else(
+        has_tcr,
+        paste(sample_id, tcr_clonotype_id, sep = "::"),
+        NA_character_
+      )
+    )
+
+  rownames(meta_df) <- meta_df$barcode
+  meta_df$barcode_raw <- NULL
+  obj@meta.data <- meta_df[colnames(obj), , drop = FALSE]
+
+  obj_with_vdj_metadata <- obj
+
+  bcr_summary <- obj_with_vdj_metadata@meta.data |>
+    dplyr::count(sample_id, has_bcr, bcr_expansion_status, name = "n_cells")
+
+  tcr_summary <- obj_with_vdj_metadata@meta.data |>
+    dplyr::count(sample_id, has_tcr, tcr_expansion_status, name = "n_cells")
+
+  obj_bcr_only <- obj
+  obj_tcr_only <- obj
+
+  if (remove_missing_bcr) {
+    obj_bcr_only <- subset(obj_bcr_only, subset = has_bcr)
+  }
+
+  if (remove_missing_tcr) {
+    obj_tcr_only <- subset(obj_tcr_only, subset = has_tcr)
   }
 
   list(
-    bcr = bcr,
-    tcr = tcr,
-    metadata = meta
+    obj_with_vdj_metadata = obj_with_vdj_metadata,
+    obj_bcr_only = obj_bcr_only,
+    obj_tcr_only = obj_tcr_only,
+    barcode_bcr_metadata = bcr_meta,
+    barcode_tcr_metadata = tcr_meta,
+    bcr_summary = bcr_summary,
+    tcr_summary = tcr_summary
   )
-}
-
-add_vdj_metadata <- function(obj, vdj) {
-  if (!is.null(vdj$metadata) && nrow(vdj$metadata) > 0) {
-    aligned <- vdj$metadata[colnames(obj), , drop = FALSE]
-    obj <- AddMetaData(obj, aligned)
-  }
-
-  if (!"has_bcr" %in% colnames(obj@meta.data)) obj$has_bcr <- FALSE
-  if (!"has_tcr" %in% colnames(obj@meta.data)) obj$has_tcr <- FALSE
-
-  obj$has_bcr[is.na(obj$has_bcr)] <- FALSE
-  obj$has_tcr[is.na(obj$has_tcr)] <- FALSE
-  obj@misc$vdj <- vdj
-
-  obj
 }
 
 ################################################################################
@@ -378,6 +623,12 @@ plot_umap <- function(obj,
     label = label
   ) +
     labs(x = NULL, y = NULL) +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank()
+    ) +
     ggtitle(NULL)
 
   save_tiff_plot(p, out_file, width = 6, height = 5)
@@ -395,15 +646,19 @@ run_soupx <- function(raw_mat,
 
   DefaultAssay(temp_obj) <- "RNA"
   temp_obj <- SCTransform(temp_obj, verbose = FALSE)
+  set.seed(1234)
   temp_obj <- RunPCA(temp_obj, npcs = n_pcs, verbose = FALSE)
+  set.seed(1234)
   temp_obj <- RunUMAP(temp_obj, dims = dims_use, verbose = FALSE)
+  set.seed(1234)
   temp_obj <- FindNeighbors(temp_obj, dims = dims_use, verbose = FALSE)
+  set.seed(1234)
   temp_obj <- FindClusters(temp_obj, resolution = resolution, verbose = TRUE)
 
   meta <- temp_obj@meta.data
   umap <- temp_obj@reductions$umap@cell.embeddings
 
-  soupx_obj <- setClusters(soupx_obj, setNames(meta$seurat_clusters, rownames(meta)))
+  soupx_obj <- setClusters(soupx_obj, setNames(as.character(meta$seurat_clusters), rownames(meta)))
   soupx_obj <- setDR(soupx_obj, umap)
 
   ensure_dir(out)
@@ -424,6 +679,8 @@ apply_qc_cutoffs <- function(obj,
                              min_features = 200,
                              max_features = 2500,
                              max_percent_mt = 5) {
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-|^mt-")
+  obj <- add_percent_ribo(obj)
   subset(
     obj,
     subset =
@@ -435,15 +692,20 @@ apply_qc_cutoffs <- function(obj,
 
 run_doublet_filter <- function(obj) {
   sce_tmp <- as.SingleCellExperiment(obj)
-  sce_tmp <- scDblFinder(sce_tmp, dbr = NULL)
+  set.seed(1234)
+  sce_tmp <- scDblFinder(
+    sce_tmp,
+    samples = "sample_id",
+    clusters = TRUE,
+    dbr = 0.08
+  )
   new_obj <- as.Seurat(sce_tmp)
-  subset(new_obj, subset = scDblFinder.class == "singlet")
+  subset(new_obj, subset = scDblFinder.class == "singlet" & scDblFinder.score < 0.15)
 }
 
 preprocess_one_sample <- function(sample_row) {
   sample_short <- sample_row$sample_short
   sample_id <- sample_row$sample_id
-  vdj_id <- sample_row$vdj_id
 
   message("Reading scRNA data for ", sample_short, " (", sample_id, ")")
   scrna <- read_sample_scrna(path.data.scrna, sample_id)
@@ -455,28 +717,25 @@ preprocess_one_sample <- function(sample_row) {
     n_pcs = 30,
     dims_use = 1:30,
     resolution = 0.2,
-    out = output_dir,
-    plot_file = paste0(sample_short, "_soupx_autoEstCont.pdf")
+    out = file.path(output_dir, "QC", "soupx"),
+    plot_file = paste0(sample_id, "_soupx_autoEstCont.pdf")
   )
 
   obj <- CreateSeuratObject(
     counts = soupx_results$adjusted_counts,
-    project = sample_short
+    project = sample_id
   )
-  obj <- RenameCells(obj, add.cell.id = sample_short)
+  obj <- RenameCells(obj, add.cell.id = sample_id)
 
   obj$sample_short <- sample_short
   obj$sample_id <- sample_id
-  obj$vdj_id <- vdj_id
+  obj$vdj_id <- sample_row$vdj_id
   obj$tissue <- sample_row$tissue
   obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-|^mt-")
-
-  message("Reading BCR/TCR data for ", sample_short)
-  vdj <- read_sample_vdj(path.data.vdj, sample_id, vdj_id, sample_short)
-  obj <- add_vdj_metadata(obj, vdj)
+  obj <- add_percent_ribo(obj)
   obj@misc$scrna_paths <- scrna$sample_paths
 
-  plot_qc_violin(obj, output_dir, paste0(sample_short, "_preQC"))
+  plot_qc_violin(obj, output_dir, paste0(sample_id, "_preQC"))
 
   message("Filtering cells and doublets for ", sample_short)
   obj <- apply_qc_cutoffs(obj)
@@ -486,14 +745,14 @@ preprocess_one_sample <- function(sample_row) {
   DefaultAssay(obj) <- "RNA"
   obj <- SCTransform(
     obj,
-    vars.to.regress = "nCount_RNA",
+    vars.to.regress = c("nCount_RNA", "percent.mt", "percent.ribo"),
     method = "glmGamPoi",
     verbose = FALSE
   )
 
-  plot_qc_violin(obj, output_dir, paste0(sample_short, "_postQC"))
+  plot_qc_violin(obj, output_dir, paste0(sample_id, "_postQC"))
 
-  sample_out <- file.path(output_dir, "individual_samples", paste0(sample_short, "_preprocessed.rds"))
+  sample_out <- file.path(output_dir, "individual_samples", paste0(sample_id, "_preprocessed.rds"))
   ensure_dir(dirname(sample_out))
   saveRDS(obj, sample_out)
 
@@ -501,8 +760,10 @@ preprocess_one_sample <- function(sample_row) {
 }
 
 integrate_list <- function(seurat_list) {
+  set.seed(1234)
   features <- SelectIntegrationFeatures(object.list = seurat_list, nfeatures = 3000)
   seurat_list <- PrepSCTIntegration(object.list = seurat_list, anchor.features = features)
+  set.seed(1234)
   anchors <- FindIntegrationAnchors(
     object.list = seurat_list,
     normalization.method = "SCT",
@@ -516,16 +777,34 @@ process_integrated <- function(obj,
                                prefix = "MGI0279_integrated",
                                npcs = 50,
                                dims_use = 1:30,
-                               k_param = 20,
+                               k_param = 50,
                                resolution = 0.2,
                                ndims = 50) {
   DefaultAssay(obj) <- "integrated"
+  set.seed(1234)
   obj <- RunPCA(obj, npcs = npcs, verbose = FALSE)
   plot_elbow(obj, output_dir = output_dir, prefix = prefix, ndims = ndims)
+  set.seed(1234)
   obj <- FindNeighbors(obj, dims = dims_use, k.param = k_param, verbose = FALSE)
+  set.seed(1234)
   obj <- FindClusters(obj, resolution = resolution, verbose = FALSE)
+  set.seed(1234)
   obj <- RunUMAP(obj, dims = dims_use, verbose = FALSE)
   plot_umap(obj, output_dir = output_dir, prefix = prefix, group = "seurat_clusters", label = TRUE)
+  obj
+}
+
+rerun_umap_with_granularity <- function(obj,
+                                        dims_use = 1:15,
+                                        k_param = 50,
+                                        resolution = 0.5) {
+  DefaultAssay(obj) <- "integrated"
+  set.seed(1234)
+  obj <- FindNeighbors(obj, dims = dims_use, k.param = k_param, verbose = FALSE)
+  set.seed(1234)
+  obj <- FindClusters(obj, resolution = resolution, verbose = FALSE)
+  set.seed(1234)
+  obj <- RunUMAP(obj, dims = dims_use, verbose = FALSE)
   obj
 }
 
@@ -536,12 +815,12 @@ export_umap_metadata <- function(obj, output_dir, prefix = "MGI0279_integrated")
   ensure_dir(dirname(out_file))
 
   umap_df <- as.data.frame(Embeddings(obj, reduction = "umap"))
-  umap_df$cell <- rownames(umap_df)
+  umap_df$barcode <- rownames(umap_df)
 
   meta_df <- obj@meta.data
-  meta_df$cell <- rownames(meta_df)
+  meta_df$barcode <- rownames(meta_df)
 
-  out_df <- dplyr::left_join(umap_df, meta_df, by = "cell")
+  out_df <- dplyr::left_join(umap_df, meta_df, by = "barcode")
   write.csv(out_df, out_file, row.names = FALSE)
   out_file
 }
@@ -556,10 +835,10 @@ message("Output directory: ", output_dir)
 message("scRNA input directory: ", path.data.scrna)
 message("VDJ input directory: ", path.data.vdj)
 
-seurat_list <- setNames(vector("list", nrow(samples)), samples$sample_short)
+seurat_list <- setNames(vector("list", nrow(samples)), samples$sample_id)
 
 for (i in seq_len(nrow(samples))) {
-  seurat_list[[samples$sample_short[[i]]]] <- preprocess_one_sample(samples[i, , drop = FALSE])
+  seurat_list[[samples$sample_id[[i]]]] <- preprocess_one_sample(samples[i, , drop = FALSE])
 }
 
 message("Integrating samples")
@@ -577,10 +856,60 @@ srt_integrated <- process_integrated(
   prefix = "MGI0279_L1_L2_M1_M2_integrated",
   npcs = 50,
   dims_use = 1:30,
-  k_param = 20,
+  k_param = 50,
   resolution = 0.2,
   ndims = 50
 )
+
+srt_integrated_clustered_rds <- file.path(output_dir, "srt_integrated_clustered.rds")
+saveRDS(srt_integrated, srt_integrated_clustered_rds)
+
+message("Re-running UMAP and clustering with reference granularity")
+srt_integrated <- rerun_umap_with_granularity(
+  srt_integrated,
+  dims_use = 1:15,
+  k_param = 20,
+  resolution = 0.6
+)
+
+plot_umap(
+  srt_integrated,
+  output_dir = output_dir,
+  prefix = "MGI0279_integrated_15_20_04",
+  group = "seurat_clusters",
+  label = TRUE
+)
+
+srt_integrated_pruned_rds <- file.path(output_dir, "srt_integrated_clustered_pruned.rds")
+saveRDS(srt_integrated, srt_integrated_pruned_rds)
+
+message("Adding BCR/TCR metadata")
+vdj_results <- add_bcr_tcr_metadata_to_object(
+  srt_integrated,
+  sample_metadata = samples,
+  path.data.vdj = path.data.vdj,
+  remove_missing_bcr = TRUE,
+  remove_missing_tcr = FALSE
+)
+
+srt_integrated_all_cells <- vdj_results$obj_with_vdj_metadata
+srt_integrated_bcr_only <- vdj_results$obj_bcr_only
+srt_integrated_tcr_only <- vdj_results$obj_tcr_only
+srt_integrated <- srt_integrated_all_cells
+
+vdj_table_dir <- ensure_dir(file.path(output_dir, "tables"))
+vdj_metadata_csv <- file.path(vdj_table_dir, "MGI0279_integrated_vdj_metadata_all_cells.csv")
+bcr_summary_csv <- file.path(vdj_table_dir, "MGI0279_integrated_bcr_summary.csv")
+tcr_summary_csv <- file.path(vdj_table_dir, "MGI0279_integrated_tcr_summary.csv")
+
+all_cell_vdj_metadata <- srt_integrated_all_cells@meta.data
+all_cell_vdj_metadata$barcode <- rownames(all_cell_vdj_metadata)
+write.csv(all_cell_vdj_metadata, vdj_metadata_csv, row.names = FALSE)
+write.csv(vdj_results$bcr_summary, bcr_summary_csv, row.names = FALSE)
+write.csv(vdj_results$tcr_summary, tcr_summary_csv, row.names = FALSE)
+
+vdj_rds <- file.path(output_dir, "srt_integrated_clustered_pruned_with_vdj_metadata.rds")
+saveRDS(srt_integrated_all_cells, vdj_rds)
 
 umap_csv_file <- export_umap_metadata(
   srt_integrated,
@@ -592,4 +921,5 @@ integrated_rds <- file.path(output_dir, "MGI0279_L1_L2_M1_M2_integrated_seurat.r
 saveRDS(srt_integrated, integrated_rds)
 
 message("Saved integrated object: ", integrated_rds)
+message("Saved VDJ-annotated object: ", vdj_rds)
 if (!is.null(umap_csv_file)) message("Saved UMAP metadata: ", umap_csv_file)
