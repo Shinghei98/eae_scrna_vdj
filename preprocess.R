@@ -20,13 +20,7 @@ path.home <- "/storage3/fs1/gfwu/Active/david/mng_dcln_project"
 path.data <- "/storage3/fs1/gfwu/Active/MGI_SEQUENCE_DATA/Sravanthi Data"
 
 path.data.scrna <- file.path(path.data, "Wu_MGI0279_1_10X")
-path.data.vdj <- file.path(path.home, "Wu_vdj_MGI0279_1_10X_cr_v7")
-path.data.vdj.fallback <- file.path(path.data, "Wu_vdj_MGI0279_1_10X_cr_v7")
-
-if (!dir.exists(path.data.vdj) && dir.exists(path.data.vdj.fallback)) {
-  message("Using fallback VDJ path: ", path.data.vdj.fallback)
-  path.data.vdj <- path.data.vdj.fallback
-}
+path.data.vdj <- file.path(path.data, "Wu_vdj_MGI0279_1_10X_cr_v7")
 
 output_dir <- file.path(path.home, "eae_scrna_vdj_preprocess")
 
