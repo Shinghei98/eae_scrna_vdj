@@ -16,7 +16,7 @@ suppressPackageStartupMessages({
 # 1. Paths and sample metadata
 ################################################################################
 
-path.home <- "/storage3/fs1/gfwu/Active/david/mng_dcln_project"
+path.home <- "/storage3/fs1/gfwu/Active/David/mng_dcln_project"
 path.data <- "/storage3/fs1/gfwu/Active/MGI_SEQUENCE_DATA/Sravanthi Data"
 
 path.data.scrna <- file.path(path.data, "Wu_MGI0279_1_10X")
