@@ -640,7 +640,7 @@ run_soupx <- function(raw_mat,
                       dims_use = 1:30,
                       resolution = 0.2,
                       out = output_dir,
-                      plot_file = "soupx_autoEstCont.pdf") {
+                      plot_file = "soupx_autoEstCont.tiff") {
   temp_obj <- CreateSeuratObject(counts = filtered_mat, project = "SoupXTemp")
   soupx_obj <- SoupChannel(tod = raw_mat, toc = filtered_mat)
 
@@ -662,7 +662,7 @@ run_soupx <- function(raw_mat,
   soupx_obj <- setDR(soupx_obj, umap)
 
   ensure_dir(out)
-  pdf(file.path(out, plot_file), width = 7, height = 7)
+  tiff(file.path(out, plot_file), width = 7, height = 7, units = "in", res = 300)
   soupx_obj <- autoEstCont(soupx_obj)
   dev.off()
 
@@ -718,7 +718,7 @@ preprocess_one_sample <- function(sample_row) {
     dims_use = 1:30,
     resolution = 0.2,
     out = file.path(output_dir, "QC", "soupx"),
-    plot_file = paste0(sample_id, "_soupx_autoEstCont.pdf")
+    plot_file = paste0(sample_id, "_soupx_autoEstCont.tiff")
   )
 
   obj <- CreateSeuratObject(
