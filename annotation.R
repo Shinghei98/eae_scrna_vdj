@@ -231,7 +231,7 @@ srt_integrated_all_cells <- set_cells_label(
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8")),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8", "12")),
   "T_cell",
   "T_cell"
 )
@@ -282,9 +282,12 @@ srt_integrated_all_cells <- set_cells_label(
 # 4. T-cell annotation
 ################################################################################
 
+# First cluster T cells (global C1, C6, C7, C8, C12) with PC=10,
+# k_param=30, res=0.5. This validates T cells (C0-2, C4-5, C7, C9),
+# residual B cells (C3, C6), and neutrophils (C8).
 tcell_obj <- subset(
   srt_integrated_all_cells,
-  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8"))
+  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8", "12"))
 )
 
 tcell_obj <- recluster_rna_subset(
@@ -309,19 +312,19 @@ saveRDS(tcell_obj, file.path(tcell_out_dir, "tcell_obj_pc10_k30_res05.rds"))
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", c("3", "8")),
+  cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", c("3", "6")),
   "B_cell",
   "residual_B_cell",
   "tcell_obj",
-  "C3_C8"
+  "C3_C6"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", "10"),
+  cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", "8"),
   "Neutrophil",
   "residual_neutrophil",
   "tcell_obj",
-  "C10"
+  "C8"
 )
 
 tcell_validated_obj <- subset(
@@ -329,72 +332,83 @@ tcell_validated_obj <- subset(
   cells = cells_in_clusters(
     tcell_obj,
     "tcell_first_cluster_pc10_res05",
-    c("0", "1", "2", "4", "5", "6", "7", "9")
+    c("0", "1", "2", "4", "5", "7", "9")
   )
 )
 
+# Recluster validated T cells with PC=10, k_param=30, res=0.4. This yields
+# Th1 (C4), naive CD8 T cells (C0, C3, C6), exhausted CD8 T cells (C1),
+# NK-like CD8 T cells (C2), CD8+ Tregs (C5), and unconventional T cells (C7).
 tcell_validated_obj <- recluster_rna_subset(
   tcell_validated_obj,
-  cluster_col = "tcell_validated_cluster_pc10_res02",
+  cluster_col = "tcell_validated_cluster_pc10_res04",
   npcs = 10,
   dims_use = 1:10,
   k_param = 30,
-  resolution = 0.2,
+  resolution = 0.4,
   nfeatures = 2000
 )
 
 plot_umap(
   tcell_validated_obj,
   output_dir = annotation_out_dir,
-  prefix = "tcell_validated_pc10_k30_res02",
+  prefix = "tcell_validated_pc10_k30_res04",
   group = "seurat_clusters",
   label = TRUE
 )
 
 saveRDS(
   tcell_validated_obj,
-  file.path(tcell_out_dir, "tcell_validated_obj_pc10_k30_res02.rds")
+  file.path(tcell_out_dir, "tcell_validated_obj_pc10_k30_res04.rds")
 )
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res02", c("0", "4")),
-  "T_cell",
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", c("0", "3", "6")),
+  "CD8_T",
   "naive_CD8_T_cell",
   "tcell_validated_obj",
-  "C0_C4"
+  "C0_C3_C6"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res02", "1"),
-  "T_cell",
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", "1"),
+  "CD8_T",
   "exhausted_CD8_T_cell",
   "tcell_validated_obj",
   "C1"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res02", "3"),
-  "T_cell",
-  "CD8_Treg",
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", "2"),
+  "CD8_T",
+  "NK_like_CD8_T_cell",
   "tcell_validated_obj",
-  "C3"
+  "C2"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res02", "5"),
-  "T_cell",
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", "4"),
+  "CD4_T",
   "Th1",
+  "tcell_validated_obj",
+  "C4"
+)
+srt_integrated_all_cells <- map_refined_cells(
+  srt_integrated_all_cells,
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", "5"),
+  "CD8_T",
+  "CD8_Treg",
   "tcell_validated_obj",
   "C5"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res02", "2"),
-  "B_cell",
-  "residual_B_cell",
+  cells_in_clusters(tcell_validated_obj, "tcell_validated_cluster_pc10_res04", "7"),
+  "UNC_T",
+  "unconventional_T_cell",
   "tcell_validated_obj",
-  "C2"
+  "C7"
 )
 
 ################################################################################
@@ -569,4 +583,3 @@ saveRDS(
 
 message("Saved annotated object: ", file.path(annotation_out_dir, "srt_fullannot.rds"))
 message("Saved annotation summary: ", file.path(annotation_out_dir, "annotation_celltype_summary.csv"))
-
