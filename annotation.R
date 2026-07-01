@@ -243,7 +243,7 @@ srt_integrated_all_cells <- set_cells_label(
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "15"),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "14"),
   "Neutrophil",
   "cycling_neutrophil"
 )
@@ -267,7 +267,7 @@ srt_integrated_all_cells <- set_cells_label(
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "14"),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "15"),
   "DC",
   "DC"
 )
@@ -415,9 +415,11 @@ srt_integrated_all_cells <- map_refined_cells(
 # 5. Myeloid, macrophage/microglia, and DC annotation
 ################################################################################
 
+# First cluster macrophages/microglia (C5), monocytes (C16), and DC (C15)
+# with PC=15, k_param=30, res=0.6.
 sct.myeloid <- subset(
   srt_integrated_all_cells,
-  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("5", "16", "14"))
+  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("5", "16", "15"))
 )
 
 sct.myeloid <- recluster_rna_subset(
