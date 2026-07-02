@@ -91,48 +91,6 @@ read_cellranger_h5_matrix <- function(h5_file) {
   mat
 }
 
-restrict_to_called_barcodes <- function(mat, barcode_file = NULL) {
-  if (is.null(barcode_file) || !file.exists(barcode_file)) return(mat)
-
-  barcode_lines <- readLines(barcode_file, n = 2L, warn = FALSE)
-  barcode_vec <- character()
-
-  if (length(barcode_lines) >= 1) {
-    first_fields <- strsplit(barcode_lines[[1]], ",", fixed = TRUE)[[1]]
-
-    if (length(first_fields) > 5 && identical(first_fields[[1]], "")) {
-      barcode_vec <- first_fields[-1]
-    }
-  }
-
-  if (length(barcode_vec) == 0) {
-    barcode_df <- read.csv(
-      barcode_file,
-      header = TRUE,
-      stringsAsFactors = FALSE,
-      check.names = FALSE
-    )
-
-    if (ncol(barcode_df) == 0) {
-      warning("Barcode file has no columns; returning original matrix.")
-      return(mat)
-    }
-
-    barcode_vec <- barcode_df[[1]]
-  }
-
-  barcode_vec <- unique(trimws(as.character(barcode_vec)))
-  barcode_vec <- barcode_vec[nzchar(barcode_vec)]
-  barcode_keep <- intersect(colnames(mat), barcode_vec)
-
-  if (length(barcode_keep) == 0) {
-    warning("No overlapping barcodes found in ", barcode_file, "; returning original matrix.")
-    return(mat)
-  }
-
-  mat[, barcode_keep, drop = FALSE]
-}
-
 parse_10x_bool <- function(x) {
   tolower(as.character(x)) %in% c("true", "t", "1")
 }
@@ -175,16 +133,12 @@ get_scrna_paths <- function(path.data.scrna, sample_id) {
 read_sample_scrna <- function(path.data.scrna, sample_id) {
   sample_paths <- get_scrna_paths(path.data.scrna, sample_id)
   require_files(
-    c(sample_paths$filtered_h5, sample_paths$raw_h5, sample_paths$barcode_csv),
+    c(sample_paths$filtered_h5, sample_paths$raw_h5),
     paste0("scRNA input for ", sample_id)
   )
 
   raw_counts <- read_cellranger_h5_matrix(sample_paths$raw_h5)
   filtered_counts <- read_cellranger_h5_matrix(sample_paths$filtered_h5)
-  filtered_counts <- restrict_to_called_barcodes(
-    filtered_counts,
-    barcode_file = sample_paths$barcode_csv
-  )
 
   list(
     raw_counts = raw_counts,
