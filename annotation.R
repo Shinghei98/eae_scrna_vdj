@@ -7,6 +7,7 @@ suppressPackageStartupMessages({
   library(SeuratObject)
   library(ggplot2)
   library(dplyr)
+  library(dbscan)
 })
 
 ################################################################################
@@ -65,6 +66,14 @@ plot_umap <- function(obj,
     ggtitle(NULL)
   save_tiff_plot(p, out_file)
 }
+
+strict_ig_regex <- paste0(
+  "^(Ighv|Ighd($|[0-9-])|Ighj($|[0-9-])|",
+  "Igha$|Ighe$|Ighm$|Ighg[0-9a-z]*$|",
+  "Igkv|Igkj($|[0-9-])|Igkc$|",
+  "Iglv|Iglj($|[0-9-])|Iglc($|[0-9-])|",
+  "Igll)"
+)
 
 recluster_rna_subset <- function(obj,
                                  cluster_col,
@@ -148,6 +157,70 @@ recluster_integrated_global <- function(obj,
   obj
 }
 
+build_noig_umap <- function(obj,
+                            npcs = 15,
+                            dims_use = 1:15,
+                            nfeatures = 2000,
+                            umap_name = "umap_noig_fixed") {
+  DefaultAssay(obj) <- "RNA"
+
+  obj <- tryCatch(
+    JoinLayers(obj, assay = "RNA"),
+    error = function(e) obj
+  )
+
+  ig_genes_strict <- rownames(obj)[grepl(strict_ig_regex, rownames(obj))]
+
+  set.seed(1234)
+  obj <- NormalizeData(obj, assay = "RNA", verbose = FALSE)
+
+  set.seed(1234)
+  obj <- FindVariableFeatures(
+    obj,
+    assay = "RNA",
+    selection.method = "vst",
+    nfeatures = nfeatures,
+    verbose = FALSE
+  )
+
+  vf_no_ig <- setdiff(VariableFeatures(obj), ig_genes_strict)
+  VariableFeatures(obj) <- vf_no_ig
+
+  set.seed(1234)
+  obj <- ScaleData(obj, assay = "RNA", features = vf_no_ig, verbose = FALSE)
+
+  set.seed(1234)
+  obj <- RunPCA(
+    obj,
+    assay = "RNA",
+    features = vf_no_ig,
+    npcs = npcs,
+    verbose = FALSE
+  )
+
+  set.seed(1234)
+  obj <- RunUMAP(
+    obj,
+    reduction = "pca",
+    dims = dims_use,
+    reduction.name = umap_name,
+    reduction.key = "UMAPNOIG_",
+    seed.use = 1234,
+    verbose = FALSE
+  )
+
+  obj
+}
+
+renumber_dbscan_by_tissue <- function(cluster_chr) {
+  out <- cluster_chr
+  keep <- sort(unique(cluster_chr[cluster_chr != "DBSCAN_0"]))
+  new <- paste0("DBSCAN_", seq_along(keep))
+  names(new) <- keep
+  out[cluster_chr != "DBSCAN_0"] <- unname(new[cluster_chr[cluster_chr != "DBSCAN_0"]])
+  out
+}
+
 init_annotation_cols <- function(obj) {
   if (!"celltype_major" %in% colnames(obj@meta.data)) {
     obj$celltype_major <- NA_character_
@@ -201,6 +274,8 @@ map_refined_cells <- function(obj,
 annotation_out_dir <- output_dir
 tcell_out_dir <- ensure_dir(file.path(annotation_out_dir, "tcell_annotation"))
 myeloid_out_dir <- ensure_dir(file.path(annotation_out_dir, "myeloid_decision_tree"))
+bcell_out_dir <- ensure_dir(file.path(annotation_out_dir, "bcell_annotation"))
+bcell_dbscan_out_dir <- ensure_dir(file.path(annotation_out_dir, "DBSCAN", "bcell_v2_tissuewise_eps020_min10_min21"))
 
 srt_integrated_all_cells <- recluster_integrated_global(
   srt_integrated_all_cells,
@@ -564,7 +639,209 @@ srt_integrated_all_cells <- map_refined_cells(
 )
 
 ################################################################################
-# 6. Save annotated object and summaries
+# 6. B-cell reclustering and tissue-wise DBSCAN
+################################################################################
+
+# Re-pool global B cells (C0, C2-4, C10), residual B cells, and B/T doublets,
+# then recluster with PC=15, k_param=30, res=0.2. This yields B cells
+# (C0, C1, C3) and mixed B/T/neutrophil doublets (C2).
+bcell_pool_cells <- unique(c(
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("0", "2", "3", "4", "10")),
+  rownames(srt_integrated_all_cells@meta.data)[srt_integrated_all_cells$celltype_minor %in% "residual_B_cell"],
+  rownames(srt_integrated_all_cells@meta.data)[srt_integrated_all_cells$celltype_minor %in% "doublet_B_T"]
+))
+
+sct.bcell_v2 <- subset(srt_integrated_all_cells, cells = bcell_pool_cells)
+
+sct.bcell_v2 <- recluster_rna_subset(
+  sct.bcell_v2,
+  cluster_col = "bcell_cluster_pc15_res02",
+  npcs = 15,
+  dims_use = 1:15,
+  k_param = 30,
+  resolution = 0.2,
+  nfeatures = 2000
+)
+
+plot_umap(
+  sct.bcell_v2,
+  output_dir = annotation_out_dir,
+  prefix = "bcell_v2_pc15_k30_res02",
+  group = "seurat_clusters",
+  label = TRUE
+)
+
+saveRDS(sct.bcell_v2, file.path(bcell_out_dir, "sct.bcell_v2_pc15_k30_res02.rds"))
+
+srt_integrated_all_cells <- map_refined_cells(
+  srt_integrated_all_cells,
+  cells_in_clusters(sct.bcell_v2, "bcell_cluster_pc15_res02", c("0", "1", "3")),
+  "B_cell",
+  "B_cell",
+  "sct.bcell_v2",
+  "C0_C1_C3"
+)
+srt_integrated_all_cells <- map_refined_cells(
+  srt_integrated_all_cells,
+  cells_in_clusters(sct.bcell_v2, "bcell_cluster_pc15_res02", "2"),
+  "doublet",
+  "doublet_B_T_neutrophil",
+  "sct.bcell_v2",
+  "C2"
+)
+
+validated_bcell_obj <- subset(
+  srt_integrated_all_cells,
+  cells = cells_in_clusters(sct.bcell_v2, "bcell_cluster_pc15_res02", c("0", "1", "3"))
+)
+
+validated_bcell_obj$TissueGroup <- dplyr::case_when(
+  grepl("_M", validated_bcell_obj$sample_id) ~ "MNG",
+  grepl("_L", validated_bcell_obj$sample_id) ~ "dCLN",
+  TRUE ~ NA_character_
+)
+validated_bcell_obj <- subset(validated_bcell_obj, subset = !is.na(TissueGroup))
+
+tissue_objs_v2 <- lapply(c("MNG", "dCLN"), function(tissue_name) {
+  obj_tissue <- subset(validated_bcell_obj, subset = TissueGroup == tissue_name)
+  build_noig_umap(
+    obj_tissue,
+    npcs = 15,
+    dims_use = 1:15,
+    nfeatures = 2000,
+    umap_name = "umap_noig_fixed"
+  )
+})
+names(tissue_objs_v2) <- c("MNG", "dCLN")
+
+eps_use <- 0.20
+minPts_use <- 10
+min_cluster_size <- 20
+
+assignment_list_v2 <- lapply(names(tissue_objs_v2), function(tissue_name) {
+  obj_tissue <- tissue_objs_v2[[tissue_name]]
+  coords <- Embeddings(obj_tissue, "umap_noig_fixed")[, 1:2, drop = FALSE]
+
+  set.seed(1234)
+  db <- dbscan::dbscan(coords, eps = eps_use, minPts = minPts_use)
+
+  raw_cluster <- paste0("DBSCAN_", db$cluster)
+  size_tab <- table(raw_cluster)
+  small_clusters <- names(size_tab)[
+    names(size_tab) != "DBSCAN_0" & size_tab <= min_cluster_size
+  ]
+  posthoc_cluster <- ifelse(
+    raw_cluster %in% small_clusters,
+    "DBSCAN_0",
+    raw_cluster
+  )
+
+  data.frame(
+    cell = colnames(obj_tissue),
+    TissueGroup = tissue_name,
+    UMAP_1 = coords[, 1],
+    UMAP_2 = coords[, 2],
+    dbscan_raw = raw_cluster,
+    dbscan_posthoc = posthoc_cluster,
+    stringsAsFactors = FALSE
+  )
+})
+
+dbscan_assignments_v2 <- dplyr::bind_rows(assignment_list_v2) |>
+  dplyr::group_by(TissueGroup) |>
+  dplyr::mutate(
+    dbscan_posthoc_renumbered = renumber_dbscan_by_tissue(dbscan_posthoc),
+    tissue_dbscan_cluster_simple_eps020_min10_min21 = dplyr::if_else(
+      dbscan_posthoc_renumbered == "DBSCAN_0",
+      "DBSCAN_noise",
+      dbscan_posthoc_renumbered
+    ),
+    tissue_dbscan_cluster_eps020_min10_min21 = dplyr::if_else(
+      dbscan_posthoc_renumbered == "DBSCAN_0",
+      paste0(TissueGroup, "_DBSCAN_noise"),
+      paste0(TissueGroup, "_", dbscan_posthoc_renumbered)
+    )
+  ) |>
+  dplyr::ungroup()
+
+dbscan_summary_v2 <- dbscan_assignments_v2 |>
+  dplyr::count(TissueGroup, tissue_dbscan_cluster_eps020_min10_min21, name = "n_cells") |>
+  dplyr::group_by(TissueGroup) |>
+  dplyr::mutate(cluster_fraction = n_cells / sum(n_cells)) |>
+  dplyr::ungroup() |>
+  dplyr::arrange(TissueGroup, dplyr::desc(n_cells))
+
+validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21 <- NA_character_
+validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21 <- NA_character_
+validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21[
+  match(dbscan_assignments_v2$cell, colnames(validated_bcell_obj))
+] <- dbscan_assignments_v2$tissue_dbscan_cluster_simple_eps020_min10_min21
+validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21[
+  match(dbscan_assignments_v2$cell, colnames(validated_bcell_obj))
+] <- dbscan_assignments_v2$tissue_dbscan_cluster_eps020_min10_min21
+
+srt_integrated_all_cells$TissueGroup <- dplyr::case_when(
+  grepl("_M", srt_integrated_all_cells$sample_id) ~ "MNG",
+  grepl("_L", srt_integrated_all_cells$sample_id) ~ "dCLN",
+  TRUE ~ NA_character_
+)
+srt_integrated_all_cells$tissue_dbscan_cluster_simple_eps020_min10_min21 <- NA_character_
+srt_integrated_all_cells$tissue_dbscan_cluster_eps020_min10_min21 <- NA_character_
+srt_integrated_all_cells$tissue_dbscan_cluster_simple_eps020_min10_min21[
+  match(dbscan_assignments_v2$cell, colnames(srt_integrated_all_cells))
+] <- dbscan_assignments_v2$tissue_dbscan_cluster_simple_eps020_min10_min21
+srt_integrated_all_cells$tissue_dbscan_cluster_eps020_min10_min21[
+  match(dbscan_assignments_v2$cell, colnames(srt_integrated_all_cells))
+] <- dbscan_assignments_v2$tissue_dbscan_cluster_eps020_min10_min21
+
+write.csv(
+  dbscan_assignments_v2,
+  file.path(bcell_dbscan_out_dir, "bcell_v2_dbscan_eps020_min10_assignments.csv"),
+  row.names = FALSE
+)
+write.csv(
+  dbscan_summary_v2,
+  file.path(bcell_dbscan_out_dir, "bcell_v2_dbscan_eps020_min10_summary.csv"),
+  row.names = FALSE
+)
+saveRDS(
+  validated_bcell_obj,
+  file.path(bcell_dbscan_out_dir, "validated_bcell_obj_tissue_dbscan_eps020_min10_min21.rds")
+)
+saveRDS(
+  tissue_objs_v2,
+  file.path(bcell_dbscan_out_dir, "tissuewise_fixed_umap_objects.rds")
+)
+
+dbscan_plot_df <- dbscan_assignments_v2 |>
+  dplyr::mutate(
+    draw_order = ifelse(grepl("DBSCAN_noise$", tissue_dbscan_cluster_eps020_min10_min21), 1, 2)
+  ) |>
+  dplyr::arrange(draw_order)
+
+dbscan_plot <- ggplot(
+  dbscan_plot_df,
+  aes(UMAP_1, UMAP_2, color = tissue_dbscan_cluster_eps020_min10_min21)
+) +
+  geom_point(size = 0.2) +
+  facet_wrap(~ TissueGroup, scales = "free") +
+  theme_classic() +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  ) +
+  ggtitle(NULL)
+
+save_tiff_plot(
+  dbscan_plot,
+  file.path(bcell_dbscan_out_dir, "bcell_v2_tissuewise_dbscan_eps020_min10.tiff"),
+  width = 8,
+  height = 4
+)
+
+################################################################################
+# 7. Save annotated object and summaries
 ################################################################################
 
 annotation_audit_df <- dplyr::bind_rows(annotation_audit_list)
