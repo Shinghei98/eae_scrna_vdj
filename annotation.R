@@ -284,7 +284,7 @@ srt_integrated_all_cells <- set_cells_label(
 
 # First cluster T cells (global C1, C6, C7, C8, C12) with PC=10,
 # k_param=30, res=0.5. This validates T cells (C0-2, C4-5, C7, C9),
-# residual B cells (C3, C6), and neutrophils (C8).
+# B/T cell doublets (C3, C6), and neutrophil/T cell doublets (C8).
 tcell_obj <- subset(
   srt_integrated_all_cells,
   cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8", "12"))
@@ -313,16 +313,16 @@ saveRDS(tcell_obj, file.path(tcell_out_dir, "tcell_obj_pc10_k30_res05.rds"))
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
   cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", c("3", "6")),
-  "B_cell",
-  "residual_B_cell",
+  "doublet",
+  "doublet_B_T",
   "tcell_obj",
   "C3_C6"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
   cells_in_clusters(tcell_obj, "tcell_first_cluster_pc10_res05", "8"),
-  "Neutrophil",
-  "residual_neutrophil",
+  "doublet",
+  "doublet_T_neutrophil",
   "tcell_obj",
   "C8"
 )
@@ -415,8 +415,10 @@ srt_integrated_all_cells <- map_refined_cells(
 # 5. Myeloid, macrophage/microglia, and DC annotation
 ################################################################################
 
-# First cluster macrophages/microglia (C5), monocytes (C16), and DC (C15)
-# with PC=15, k_param=30, res=0.6.
+# First cluster macrophages/microglia (global C5), monocytes (global C16),
+# and DC (global C15) with PC=15, k_param=30, res=0.6. This yields
+# macrophages/microglia (C0-2, C4), DC (C3, C6, C7), monocytes (C5),
+# and residual B cells (C8).
 sct.myeloid <- subset(
   srt_integrated_all_cells,
   cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("5", "16", "15"))
@@ -522,6 +524,8 @@ sct.dc <- subset(
   cells = cells_in_clusters(sct.myeloid, "myeloid_cluster_pc15_res06", c("3", "6", "7"))
 )
 
+# Recluster DC with PC=15, k_param=30, res=0.8. This yields
+# non-migratory DC (C1-2) and migratory DC (C0, C3-4).
 sct.dc <- recluster_rna_subset(
   sct.dc,
   cluster_col = "dc_cluster_pc15_res08",
@@ -544,17 +548,17 @@ saveRDS(sct.dc, file.path(myeloid_out_dir, "sct.dc_pc15_res08.rds"))
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.dc, "dc_cluster_pc15_res08", c("0", "3")),
+  cells_in_clusters(sct.dc, "dc_cluster_pc15_res08", c("0", "3", "4")),
   "DC",
   "migratory_DC",
   "sct.dc",
-  "C0_C3"
+  "C0_C3_C4"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
   cells_in_clusters(sct.dc, "dc_cluster_pc15_res08", c("1", "2")),
   "DC",
-  "tissue_resident_DC",
+  "non_migratory_DC",
   "sct.dc",
   "C1_C2"
 )
