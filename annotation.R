@@ -7,7 +7,6 @@ suppressPackageStartupMessages({
   library(SeuratObject)
   library(ggplot2)
   library(dplyr)
-  library(dbscan)
 })
 
 ################################################################################
@@ -66,14 +65,6 @@ plot_umap <- function(obj,
     ggtitle(NULL)
   save_tiff_plot(p, out_file)
 }
-
-strict_ig_regex <- paste0(
-  "^(Ighv|Ighd($|[0-9-])|Ighj($|[0-9-])|",
-  "Igha$|Ighe$|Ighm$|Ighg[0-9a-z]*$|",
-  "Igkv|Igkj($|[0-9-])|Igkc$|",
-  "Iglv|Iglj($|[0-9-])|Iglc($|[0-9-])|",
-  "Igll)"
-)
 
 recluster_rna_subset <- function(obj,
                                  cluster_col,
@@ -150,84 +141,22 @@ recluster_integrated_global <- function(obj,
 
   set.seed(1234)
   obj <- FindNeighbors(obj, dims = dims_use, k.param = k_param, verbose = FALSE)
+
   set.seed(1234)
   obj <- FindClusters(obj, resolution = resolution, verbose = FALSE)
+
   set.seed(1234)
   obj <- RunUMAP(obj, dims = dims_use, verbose = FALSE)
-  obj
-}
-
-build_noig_umap <- function(obj,
-                            npcs = 15,
-                            dims_use = 1:15,
-                            nfeatures = 2000,
-                            umap_name = "umap_noig_fixed") {
-  DefaultAssay(obj) <- "RNA"
-
-  obj <- tryCatch(
-    JoinLayers(obj, assay = "RNA"),
-    error = function(e) obj
-  )
-
-  ig_genes_strict <- rownames(obj)[grepl(strict_ig_regex, rownames(obj))]
-
-  set.seed(1234)
-  obj <- NormalizeData(obj, assay = "RNA", verbose = FALSE)
-
-  set.seed(1234)
-  obj <- FindVariableFeatures(
-    obj,
-    assay = "RNA",
-    selection.method = "vst",
-    nfeatures = nfeatures,
-    verbose = FALSE
-  )
-
-  vf_no_ig <- setdiff(VariableFeatures(obj), ig_genes_strict)
-  VariableFeatures(obj) <- vf_no_ig
-
-  set.seed(1234)
-  obj <- ScaleData(obj, assay = "RNA", features = vf_no_ig, verbose = FALSE)
-
-  set.seed(1234)
-  obj <- RunPCA(
-    obj,
-    assay = "RNA",
-    features = vf_no_ig,
-    npcs = npcs,
-    verbose = FALSE
-  )
-
-  set.seed(1234)
-  obj <- RunUMAP(
-    obj,
-    reduction = "pca",
-    dims = dims_use,
-    reduction.name = umap_name,
-    reduction.key = "UMAPNOIG_",
-    seed.use = 1234,
-    verbose = FALSE
-  )
 
   obj
-}
-
-renumber_dbscan_by_tissue <- function(cluster_chr) {
-  out <- cluster_chr
-  keep <- sort(unique(cluster_chr[cluster_chr != "DBSCAN_0"]))
-  new <- paste0("DBSCAN_", seq_along(keep))
-  names(new) <- keep
-  out[cluster_chr != "DBSCAN_0"] <- unname(new[cluster_chr[cluster_chr != "DBSCAN_0"]])
-  out
 }
 
 init_annotation_cols <- function(obj) {
-  if (!"celltype_major" %in% colnames(obj@meta.data)) {
-    obj$celltype_major <- NA_character_
-  }
-  if (!"celltype_minor" %in% colnames(obj@meta.data)) {
-    obj$celltype_minor <- NA_character_
-  }
+  obj$celltype_major <- NA_character_
+  obj$celltype_minor <- NA_character_
+  obj$annotation_source <- NA_character_
+  obj$annotation_cluster <- NA_character_
+  obj$annotation_label <- NA_character_
   obj
 }
 
@@ -275,7 +204,6 @@ annotation_out_dir <- output_dir
 tcell_out_dir <- ensure_dir(file.path(annotation_out_dir, "tcell_annotation"))
 myeloid_out_dir <- ensure_dir(file.path(annotation_out_dir, "myeloid_decision_tree"))
 bcell_out_dir <- ensure_dir(file.path(annotation_out_dir, "bcell_annotation"))
-bcell_dbscan_out_dir <- ensure_dir(file.path(annotation_out_dir, "DBSCAN", "bcell_tissuewise_eps020_min10_min21"))
 
 srt_integrated_all_cells <- recluster_integrated_global(
   srt_integrated_all_cells,
@@ -284,9 +212,11 @@ srt_integrated_all_cells <- recluster_integrated_global(
   resolution = 0.6
 )
 srt_integrated_all_cells <- init_annotation_cols(srt_integrated_all_cells)
-srt_integrated_all_cells$annotation_source <- NA_character_
-srt_integrated_all_cells$annotation_cluster <- NA_character_
-srt_integrated_all_cells$annotation_label <- NA_character_
+srt_integrated_all_cells$TissueGroup <- dplyr::case_when(
+  grepl("_M", srt_integrated_all_cells$sample_id) ~ "MNG",
+  grepl("_L", srt_integrated_all_cells$sample_id) ~ "dCLN",
+  TRUE ~ NA_character_
+)
 
 plot_umap(
   srt_integrated_all_cells,
@@ -298,6 +228,11 @@ plot_umap(
 
 annotation_audit_list <- list()
 
+# All cells are first clustered into 18 clusters with PC=15, k_param=20,
+# res=0.6. This yields B cells (C0, C2-4, C10), T cells (C1, C7-9,
+# C11), neutrophils (C6, C15), cycling neutrophils (C14),
+# macrophages/microglia (C5), monocytes (C16), NK cells (C12), DC
+# (C13), and doublets with unknown identity (C17).
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
   cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("0", "2", "3", "4", "10")),
@@ -306,13 +241,13 @@ srt_integrated_all_cells <- set_cells_label(
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8", "12")),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "7", "8", "9", "11")),
   "T_cell",
   "T_cell"
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("9", "11")),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("6", "15")),
   "Neutrophil",
   "Neutrophil"
 )
@@ -336,13 +271,13 @@ srt_integrated_all_cells <- set_cells_label(
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "13"),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "12"),
   "NK_cell",
   "NK_cell"
 )
 srt_integrated_all_cells <- set_cells_label(
   srt_integrated_all_cells,
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "15"),
+  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", "13"),
   "DC",
   "DC"
 )
@@ -357,12 +292,12 @@ srt_integrated_all_cells <- set_cells_label(
 # 4. T-cell annotation
 ################################################################################
 
-# First cluster T cells (global C1, C6, C7, C8, C12) with PC=10,
-# k_param=30, res=0.5. This validates T cells (C0-2, C4-5, C7, C9),
-# B/T cell doublets (C3, C6), and neutrophil/T cell doublets (C8).
+# First cluster T cells (global C1, C7-9, C11) with PC=10, k_param=30,
+# res=0.5. This validates T cells (C0-2, C4-5, C7, C9), B/T cell
+# doublets (C3, C6), and neutrophil/T cell doublets (C8).
 tcell_obj <- subset(
   srt_integrated_all_cells,
-  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "6", "7", "8", "12"))
+  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("1", "7", "8", "9", "11"))
 )
 
 tcell_obj <- recluster_rna_subset(
@@ -413,7 +348,8 @@ tcell_validated_obj <- subset(
 
 # Recluster validated T cells with PC=10, k_param=30, res=0.4. This yields
 # Th1 (C4), naive CD8 T cells (C0, C3, C6), exhausted CD8 T cells (C1),
-# NK-like CD8 T cells (C2), CD8+ Tregs (C5), and unconventional T cells (C7).
+# NK-like CD8 T cells (C2), CD8+ Tregs (C5), and unconventional T cells
+# (C7).
 tcell_validated_obj <- recluster_rna_subset(
   tcell_validated_obj,
   cluster_col = "tcell_validated_cluster_pc10_res04",
@@ -491,12 +427,12 @@ srt_integrated_all_cells <- map_refined_cells(
 ################################################################################
 
 # First cluster macrophages/microglia (global C5), monocytes (global C16),
-# and DC (global C15) with PC=15, k_param=30, res=0.6. This yields
-# macrophages/microglia (C0-2, C4), DC (C3, C6, C7), monocytes (C5),
+# and DC (global C13) with PC=15, k_param=30, res=0.6. This yields
+# macrophages/microglia (C0-2, C4), DC (C3, C6-7), monocytes (C5),
 # and residual B cells (C8).
 sct.myeloid <- subset(
   srt_integrated_all_cells,
-  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("5", "16", "15"))
+  cells = cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("5", "16", "13"))
 )
 
 sct.myeloid <- recluster_rna_subset(
@@ -541,6 +477,9 @@ sct.macrophage <- subset(
   cells = cells_in_clusters(sct.myeloid, "myeloid_cluster_pc15_res06", c("0", "1", "2", "4"))
 )
 
+# Recluster macrophages/microglia with PC=10, k_param=30, res=0.6. This
+# yields DAM2 (C0), DAM1 (C1), macrophages (C2), and low-quality
+# macrophage/microglia (C3).
 sct.macrophage <- recluster_rna_subset(
   sct.macrophage,
   cluster_col = "macrophage_cluster_pc10_res06",
@@ -563,19 +502,19 @@ saveRDS(sct.macrophage, file.path(myeloid_out_dir, "sct.macrophage_pc10_res06.rd
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.macrophage, "macrophage_cluster_pc10_res06", c("0", "1")),
-  "macrophage/microglia",
-  "DAM1",
-  "sct.macrophage",
-  "C0_C1"
-)
-srt_integrated_all_cells <- map_refined_cells(
-  srt_integrated_all_cells,
-  cells_in_clusters(sct.macrophage, "macrophage_cluster_pc10_res06", "4"),
+  cells_in_clusters(sct.macrophage, "macrophage_cluster_pc10_res06", "0"),
   "macrophage/microglia",
   "DAM2",
   "sct.macrophage",
-  "C4"
+  "C0"
+)
+srt_integrated_all_cells <- map_refined_cells(
+  srt_integrated_all_cells,
+  cells_in_clusters(sct.macrophage, "macrophage_cluster_pc10_res06", "1"),
+  "macrophage/microglia",
+  "DAM1",
+  "sct.macrophage",
+  "C1"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
@@ -599,8 +538,8 @@ sct.dc <- subset(
   cells = cells_in_clusters(sct.myeloid, "myeloid_cluster_pc15_res06", c("3", "6", "7"))
 )
 
-# Recluster DC with PC=15, k_param=30, res=0.8. This yields
-# non-migratory DC (C1-2) and migratory DC (C0, C3-4).
+# Recluster DC with PC=15, k_param=30, res=0.8. This yields non-migratory
+# DC (C1-2) and migratory DC (C0, C3).
 sct.dc <- recluster_rna_subset(
   sct.dc,
   cluster_col = "dc_cluster_pc15_res08",
@@ -623,11 +562,11 @@ saveRDS(sct.dc, file.path(myeloid_out_dir, "sct.dc_pc15_res08.rds"))
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.dc, "dc_cluster_pc15_res08", c("0", "3", "4")),
+  cells_in_clusters(sct.dc, "dc_cluster_pc15_res08", c("0", "3")),
   "DC",
   "migratory_DC",
   "sct.dc",
-  "C0_C3_C4"
+  "C0_C3"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
@@ -639,15 +578,35 @@ srt_integrated_all_cells <- map_refined_cells(
 )
 
 ################################################################################
-# 6. B-cell reclustering and tissue-wise DBSCAN
+# 6. B-cell candidate reclustering
 ################################################################################
 
-# Recluster global B cells (C0, C2-4, C10), residual B cells, and B/T
-# doublets with PC=15, k_param=30, res=0.2.
+# Collect B-lineage candidates from global B-cell clusters (C0, C2-4, C10),
+# residual B cells from myeloid reclustering (myeloid C8), and B/T
+# doublet-like residual B cells from T-cell reclustering (T-cell C3, C6).
+# Recluster with PC=15, k_param=30, res=0.2. This yields B cells
+# (CD79bHIGH, C0-1, C3), doublets with T cells (C2), and doublets with
+# neutrophils (C4).
+global_b_cells <- cells_in_clusters(
+  srt_integrated_all_cells,
+  "seurat_clusters",
+  c("0", "2", "3", "4", "10")
+)
+myeloid_residual_b_cells <- cells_in_clusters(
+  sct.myeloid,
+  "myeloid_cluster_pc15_res06",
+  "8"
+)
+tcell_residual_b_cells <- cells_in_clusters(
+  tcell_obj,
+  "tcell_first_cluster_pc10_res05",
+  c("3", "6")
+)
+
 bcell_pool_cells <- unique(c(
-  cells_in_clusters(srt_integrated_all_cells, "seurat_clusters", c("0", "2", "3", "4", "10")),
-  rownames(srt_integrated_all_cells@meta.data)[srt_integrated_all_cells$celltype_minor %in% "residual_B_cell"],
-  rownames(srt_integrated_all_cells@meta.data)[srt_integrated_all_cells$celltype_minor %in% "doublet_B_T"]
+  global_b_cells,
+  myeloid_residual_b_cells,
+  tcell_residual_b_cells
 ))
 
 sct.bcell <- subset(srt_integrated_all_cells, cells = bcell_pool_cells)
@@ -684,159 +643,17 @@ srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
   cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", "2"),
   "doublet",
-  "doublet_B_T_neutrophil",
+  "doublet_B_T",
   "sct.bcell",
   "C2"
 )
-
-validated_bcell_obj <- subset(
+srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells = cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", c("0", "1", "3"))
-)
-
-validated_bcell_obj$TissueGroup <- dplyr::case_when(
-  grepl("_M", validated_bcell_obj$sample_id) ~ "MNG",
-  grepl("_L", validated_bcell_obj$sample_id) ~ "dCLN",
-  TRUE ~ NA_character_
-)
-validated_bcell_obj <- subset(validated_bcell_obj, subset = !is.na(TissueGroup))
-
-tissue_objs <- lapply(c("MNG", "dCLN"), function(tissue_name) {
-  obj_tissue <- subset(validated_bcell_obj, subset = TissueGroup == tissue_name)
-  build_noig_umap(
-    obj_tissue,
-    npcs = 15,
-    dims_use = 1:15,
-    nfeatures = 2000,
-    umap_name = "umap_noig_fixed"
-  )
-})
-names(tissue_objs) <- c("MNG", "dCLN")
-
-eps_use <- 0.20
-minPts_use <- 10
-min_cluster_size <- 20
-
-assignment_list <- lapply(names(tissue_objs), function(tissue_name) {
-  obj_tissue <- tissue_objs[[tissue_name]]
-  coords <- Embeddings(obj_tissue, "umap_noig_fixed")[, 1:2, drop = FALSE]
-
-  set.seed(1234)
-  db <- dbscan::dbscan(coords, eps = eps_use, minPts = minPts_use)
-
-  raw_cluster <- paste0("DBSCAN_", db$cluster)
-  size_tab <- table(raw_cluster)
-  small_clusters <- names(size_tab)[
-    names(size_tab) != "DBSCAN_0" & size_tab <= min_cluster_size
-  ]
-  posthoc_cluster <- ifelse(
-    raw_cluster %in% small_clusters,
-    "DBSCAN_0",
-    raw_cluster
-  )
-
-  data.frame(
-    cell = colnames(obj_tissue),
-    TissueGroup = tissue_name,
-    UMAP_1 = coords[, 1],
-    UMAP_2 = coords[, 2],
-    dbscan_raw = raw_cluster,
-    dbscan_posthoc = posthoc_cluster,
-    stringsAsFactors = FALSE
-  )
-})
-
-dbscan_assignments <- dplyr::bind_rows(assignment_list) |>
-  dplyr::group_by(TissueGroup) |>
-  dplyr::mutate(
-    dbscan_posthoc_renumbered = renumber_dbscan_by_tissue(dbscan_posthoc),
-    tissue_dbscan_cluster_simple_eps020_min10_min21 = dplyr::if_else(
-      dbscan_posthoc_renumbered == "DBSCAN_0",
-      "DBSCAN_noise",
-      dbscan_posthoc_renumbered
-    ),
-    tissue_dbscan_cluster_eps020_min10_min21 = dplyr::if_else(
-      dbscan_posthoc_renumbered == "DBSCAN_0",
-      paste0(TissueGroup, "_DBSCAN_noise"),
-      paste0(TissueGroup, "_", dbscan_posthoc_renumbered)
-    )
-  ) |>
-  dplyr::ungroup()
-
-dbscan_summary <- dbscan_assignments |>
-  dplyr::count(TissueGroup, tissue_dbscan_cluster_eps020_min10_min21, name = "n_cells") |>
-  dplyr::group_by(TissueGroup) |>
-  dplyr::mutate(cluster_fraction = n_cells / sum(n_cells)) |>
-  dplyr::ungroup() |>
-  dplyr::arrange(TissueGroup, dplyr::desc(n_cells))
-
-validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21 <- NA_character_
-validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21 <- NA_character_
-validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(validated_bcell_obj))
-] <- dbscan_assignments$tissue_dbscan_cluster_simple_eps020_min10_min21
-validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(validated_bcell_obj))
-] <- dbscan_assignments$tissue_dbscan_cluster_eps020_min10_min21
-
-srt_integrated_all_cells$TissueGroup <- dplyr::case_when(
-  grepl("_M", srt_integrated_all_cells$sample_id) ~ "MNG",
-  grepl("_L", srt_integrated_all_cells$sample_id) ~ "dCLN",
-  TRUE ~ NA_character_
-)
-srt_integrated_all_cells$tissue_dbscan_cluster_simple_eps020_min10_min21 <- NA_character_
-srt_integrated_all_cells$tissue_dbscan_cluster_eps020_min10_min21 <- NA_character_
-srt_integrated_all_cells$tissue_dbscan_cluster_simple_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(srt_integrated_all_cells))
-] <- dbscan_assignments$tissue_dbscan_cluster_simple_eps020_min10_min21
-srt_integrated_all_cells$tissue_dbscan_cluster_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(srt_integrated_all_cells))
-] <- dbscan_assignments$tissue_dbscan_cluster_eps020_min10_min21
-
-write.csv(
-  dbscan_assignments,
-  file.path(bcell_dbscan_out_dir, "bcell_dbscan_eps020_min10_assignments.csv"),
-  row.names = FALSE
-)
-write.csv(
-  dbscan_summary,
-  file.path(bcell_dbscan_out_dir, "bcell_dbscan_eps020_min10_summary.csv"),
-  row.names = FALSE
-)
-saveRDS(
-  validated_bcell_obj,
-  file.path(bcell_dbscan_out_dir, "validated_bcell_obj_tissue_dbscan_eps020_min10_min21.rds")
-)
-saveRDS(
-  tissue_objs,
-  file.path(bcell_dbscan_out_dir, "tissuewise_fixed_umap_objects.rds")
-)
-
-dbscan_plot_df <- dbscan_assignments |>
-  dplyr::mutate(
-    draw_order = ifelse(grepl("DBSCAN_noise$", tissue_dbscan_cluster_eps020_min10_min21), 1, 2)
-  ) |>
-  dplyr::arrange(draw_order)
-
-dbscan_plot <- ggplot(
-  dbscan_plot_df,
-  aes(UMAP_1, UMAP_2, color = tissue_dbscan_cluster_eps020_min10_min21)
-) +
-  geom_point(size = 0.2) +
-  facet_wrap(~ TissueGroup, scales = "free") +
-  theme_classic() +
-  theme(
-    axis.title = element_blank(),
-    axis.text = element_blank(),
-    axis.ticks = element_blank()
-  ) +
-  ggtitle(NULL)
-
-save_tiff_plot(
-  dbscan_plot,
-  file.path(bcell_dbscan_out_dir, "bcell_tissuewise_dbscan_eps020_min10.tiff"),
-  width = 8,
-  height = 4
+  cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", "4"),
+  "doublet",
+  "doublet_B_neutrophil",
+  "sct.bcell",
+  "C4"
 )
 
 ################################################################################
