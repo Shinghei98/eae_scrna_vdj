@@ -166,9 +166,106 @@ tissue_objs <- lapply(c("MNG", "dCLN"), function(tissue_name) {
 })
 names(tissue_objs) <- c("MNG", "dCLN")
 
-eps_use <- 0.20
+eps_grid <- c(0.05, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30)
 minPts_use <- 10
 min_cluster_size <- 20
+
+summarize_dbscan_result <- function(tissue_name, eps_value, coords) {
+  set.seed(1234)
+  db <- dbscan::dbscan(coords, eps = eps_value, minPts = minPts_use)
+
+  raw_cluster <- paste0("DBSCAN_", db$cluster)
+  raw_size_tab <- table(raw_cluster)
+  raw_non_noise <- raw_size_tab[names(raw_size_tab) != "DBSCAN_0"]
+
+  small_clusters <- names(raw_size_tab)[
+    names(raw_size_tab) != "DBSCAN_0" & raw_size_tab <= min_cluster_size
+  ]
+  posthoc_cluster <- ifelse(
+    raw_cluster %in% small_clusters,
+    "DBSCAN_0",
+    raw_cluster
+  )
+
+  posthoc_size_tab <- table(posthoc_cluster)
+  posthoc_non_noise <- posthoc_size_tab[names(posthoc_size_tab) != "DBSCAN_0"]
+
+  summary_df <- data.frame(
+    TissueGroup = tissue_name,
+    eps = eps_value,
+    minPts = minPts_use,
+    n_cells = length(raw_cluster),
+    raw_n_noise = unname(ifelse("DBSCAN_0" %in% names(raw_size_tab), raw_size_tab[["DBSCAN_0"]], 0)),
+    raw_noise_pct = round(100 * mean(raw_cluster == "DBSCAN_0"), 1),
+    raw_n_clusters = length(raw_non_noise),
+    raw_min_cluster_n = ifelse(length(raw_non_noise) > 0, min(raw_non_noise), NA),
+    raw_median_cluster_n = ifelse(length(raw_non_noise) > 0, median(raw_non_noise), NA),
+    raw_max_cluster_n = ifelse(length(raw_non_noise) > 0, max(raw_non_noise), NA),
+    n_small_clusters_collapsed = length(small_clusters),
+    posthoc_n_noise = unname(ifelse("DBSCAN_0" %in% names(posthoc_size_tab), posthoc_size_tab[["DBSCAN_0"]], 0)),
+    posthoc_noise_pct = round(100 * mean(posthoc_cluster == "DBSCAN_0"), 1),
+    posthoc_n_clusters = length(posthoc_non_noise),
+    posthoc_min_cluster_n = ifelse(length(posthoc_non_noise) > 0, min(posthoc_non_noise), NA),
+    posthoc_median_cluster_n = ifelse(length(posthoc_non_noise) > 0, median(posthoc_non_noise), NA),
+    posthoc_max_cluster_n = ifelse(length(posthoc_non_noise) > 0, max(posthoc_non_noise), NA),
+    stringsAsFactors = FALSE
+  )
+
+  cluster_size_df <- data.frame(
+    TissueGroup = tissue_name,
+    eps = eps_value,
+    minPts = minPts_use,
+    dbscan_raw = names(raw_size_tab),
+    raw_n_cells = as.integer(raw_size_tab),
+    stringsAsFactors = FALSE
+  ) |>
+    dplyr::left_join(
+      data.frame(
+        dbscan_posthoc = names(posthoc_size_tab),
+        posthoc_n_cells = as.integer(posthoc_size_tab),
+        stringsAsFactors = FALSE
+      ),
+      by = c("dbscan_raw" = "dbscan_posthoc")
+    ) |>
+    dplyr::mutate(
+      collapsed_to_noise = dbscan_raw %in% small_clusters
+    )
+
+  list(summary = summary_df, cluster_sizes = cluster_size_df)
+}
+
+scan_results <- lapply(names(tissue_objs), function(tissue_name) {
+  coords <- Embeddings(tissue_objs[[tissue_name]], "umap_noig_fixed")[, 1:2, drop = FALSE]
+  lapply(eps_grid, function(eps_value) {
+    summarize_dbscan_result(tissue_name, eps_value, coords)
+  })
+}) |>
+  unlist(recursive = FALSE)
+
+dbscan_eps_scan_summary <- dplyr::bind_rows(lapply(scan_results, `[[`, "summary")) |>
+  dplyr::arrange(TissueGroup, eps)
+dbscan_eps_scan_cluster_sizes <- dplyr::bind_rows(lapply(scan_results, `[[`, "cluster_sizes")) |>
+  dplyr::arrange(TissueGroup, eps, dbscan_raw)
+
+cat("\n====================\n")
+cat("DBSCAN eps sensitivity scan\n")
+cat("====================\n")
+print(dbscan_eps_scan_summary, row.names = FALSE)
+
+write.csv(
+  dbscan_eps_scan_summary,
+  file.path(dbscan_dir, "bcell_dbscan_eps_scan_summary.csv"),
+  row.names = FALSE
+)
+write.csv(
+  dbscan_eps_scan_cluster_sizes,
+  file.path(dbscan_dir, "bcell_dbscan_eps_scan_cluster_sizes.csv"),
+  row.names = FALSE
+)
+
+# Selected after inspecting the eps scan for overfragmentation/noise at small eps
+# and collapse into dominant clusters at large eps.
+eps_use <- 0.20
 
 assignment_list <- lapply(names(tissue_objs), function(tissue_name) {
   obj_tissue <- tissue_objs[[tissue_name]]
