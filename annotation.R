@@ -584,9 +584,11 @@ srt_integrated_all_cells <- map_refined_cells(
 # Collect B-lineage candidates from global B-cell clusters (C0, C2-4, C10),
 # residual B cells from myeloid reclustering (myeloid C8), and B/T
 # doublet-like residual B cells from T-cell reclustering (T-cell C3, C6).
-# Recluster with PC=15, k_param=30, res=0.2. This yields B cells
+# Recluster with PC=10, k_param=30, res=0.2. This yields B cells
 # (CD79bHIGH, C0-1, C3), doublets with T cells (C2), and doublets with
-# neutrophils (C4).
+# neutrophils (C4). Recluster the B/T doublet-like C2 cells with PC=10,
+# k_param=30, res=0.4; C1 is B-like and recovered into the validated B-cell
+# pool, while the remaining clusters stay labeled as B/T doublets.
 global_b_cells <- cells_in_clusters(
   srt_integrated_all_cells,
   "seurat_clusters",
@@ -613,9 +615,9 @@ sct.bcell <- subset(srt_integrated_all_cells, cells = bcell_pool_cells)
 
 sct.bcell <- recluster_rna_subset(
   sct.bcell,
-  cluster_col = "bcell_cluster_pc15_res02",
-  npcs = 15,
-  dims_use = 1:15,
+  cluster_col = "bcell_cluster_pc10_res02",
+  npcs = 10,
+  dims_use = 1:10,
   k_param = 30,
   resolution = 0.2,
   nfeatures = 2000
@@ -624,16 +626,61 @@ sct.bcell <- recluster_rna_subset(
 plot_umap(
   sct.bcell,
   output_dir = annotation_out_dir,
-  prefix = "bcell_pc15_k30_res02",
+  prefix = "bcell_pc10_k30_res02",
   group = "seurat_clusters",
   label = TRUE
 )
 
-saveRDS(sct.bcell, file.path(bcell_out_dir, "sct.bcell_pc15_k30_res02.rds"))
+saveRDS(sct.bcell, file.path(bcell_out_dir, "sct.bcell_pc10_k30_res02.rds"))
+
+bcell_validated_cells <- cells_in_clusters(
+  sct.bcell,
+  "bcell_cluster_pc10_res02",
+  c("0", "1", "3")
+)
+bcell_doublet_bt_cells <- cells_in_clusters(
+  sct.bcell,
+  "bcell_cluster_pc10_res02",
+  "2"
+)
+bcell_doublet_neutrophil_cells <- cells_in_clusters(
+  sct.bcell,
+  "bcell_cluster_pc10_res02",
+  "4"
+)
+
+sct.bt <- subset(srt_integrated_all_cells, cells = bcell_doublet_bt_cells)
+
+sct.bt <- recluster_rna_subset(
+  sct.bt,
+  cluster_col = "bcell_doublet_bt_cluster_pc10_res04",
+  npcs = 10,
+  dims_use = 1:10,
+  k_param = 30,
+  resolution = 0.4,
+  nfeatures = 2000
+)
+
+plot_umap(
+  sct.bt,
+  output_dir = annotation_out_dir,
+  prefix = "bcell_doublet_bt_pc10_k30_res04",
+  group = "seurat_clusters",
+  label = TRUE
+)
+
+saveRDS(sct.bt, file.path(bcell_out_dir, "sct.bcell_doublet_bt_pc10_k30_res04.rds"))
+
+recovered_bt_b_cells <- cells_in_clusters(
+  sct.bt,
+  "bcell_doublet_bt_cluster_pc10_res04",
+  "1"
+)
+remaining_doublet_bt_cells <- setdiff(bcell_doublet_bt_cells, recovered_bt_b_cells)
 
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", c("0", "1", "3")),
+  bcell_validated_cells,
   "B_cell",
   "B_cell",
   "sct.bcell",
@@ -641,15 +688,23 @@ srt_integrated_all_cells <- map_refined_cells(
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", "2"),
-  "doublet",
-  "doublet_B_T",
-  "sct.bcell",
-  "C2"
+  recovered_bt_b_cells,
+  "B_cell",
+  "B_cell",
+  "sct.bt",
+  "C1_recovered_from_bcell_C2"
 )
 srt_integrated_all_cells <- map_refined_cells(
   srt_integrated_all_cells,
-  cells_in_clusters(sct.bcell, "bcell_cluster_pc15_res02", "4"),
+  remaining_doublet_bt_cells,
+  "doublet",
+  "doublet_B_T",
+  "sct.bt",
+  "not_C1_from_bcell_C2"
+)
+srt_integrated_all_cells <- map_refined_cells(
+  srt_integrated_all_cells,
+  bcell_doublet_neutrophil_cells,
   "doublet",
   "doublet_B_neutrophil",
   "sct.bcell",

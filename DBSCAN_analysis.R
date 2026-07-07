@@ -22,14 +22,20 @@ if (!file.exists(annotated_rds)) {
   stop("Annotated object not found: ", annotated_rds, call. = FALSE)
 }
 
-dbscan_dir <- file.path(output_dir, "DBSCAN", "bcell_tissuewise_eps020_min10_min21")
-program_out_dir <- file.path(output_dir, "DBSCAN", "bcell_program_signatures_and_overlap")
+dbscan_dir <- file.path(output_dir, "DBSCAN", "bcell_tissuewise_eps017_min5_min31")
+program_out_dir <- file.path(dbscan_dir, "bcell_program_signatures_and_overlap")
 if (!dir.exists(dbscan_dir)) dir.create(dbscan_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(program_out_dir)) dir.create(program_out_dir, recursive = TRUE, showWarnings = FALSE)
 
-cluster_col <- "tissue_dbscan_cluster_eps020_min10_min21"
+full_with_dbscan_rds <- file.path(output_dir, "srt_fullannot_with_bcell_dbscan_eps017_min5_min31.rds")
+cluster_col <- "tissue_dbscan_cluster_eps017_min5_min31"
+cluster_simple_col <- "tissue_dbscan_cluster_simple_eps017_min5_min31"
 tissue_col <- "TissueGroup"
+bcell_minor_backup_col <- "celltype_minor_pre_bcell_dbscan"
 min_signature_genes <- 50
+eps_use <- 0.17
+minPts_use <- 5
+min_cluster_size <- 30
 
 ################################################################################
 # 2. Helpers
@@ -65,20 +71,11 @@ build_noig_umap <- function(obj,
                             umap_name = "umap_noig_fixed") {
   DefaultAssay(obj) <- "RNA"
 
-  obj <- tryCatch(
-    JoinLayers(obj, assay = "RNA"),
-    error = function(e) obj
-  )
-
   ig_genes_strict <- rownames(obj)[grepl(strict_ig_regex, rownames(obj))]
-
-  set.seed(1234)
-  obj <- NormalizeData(obj, assay = "RNA", verbose = FALSE)
 
   set.seed(1234)
   obj <- FindVariableFeatures(
     obj,
-    assay = "RNA",
     selection.method = "vst",
     nfeatures = nfeatures,
     verbose = FALSE
@@ -88,12 +85,11 @@ build_noig_umap <- function(obj,
   VariableFeatures(obj) <- vf_no_ig
 
   set.seed(1234)
-  obj <- ScaleData(obj, assay = "RNA", features = vf_no_ig, verbose = FALSE)
+  obj <- ScaleData(obj, features = vf_no_ig, verbose = FALSE)
 
   set.seed(1234)
   obj <- RunPCA(
     obj,
-    assay = "RNA",
     features = vf_no_ig,
     npcs = npcs,
     verbose = FALSE
@@ -106,7 +102,6 @@ build_noig_umap <- function(obj,
     dims = dims_use,
     reduction.name = umap_name,
     reduction.key = "UMAPNOIG_",
-    seed.use = 1234,
     verbose = FALSE
   )
 
@@ -166,9 +161,10 @@ tissue_objs <- lapply(c("MNG", "dCLN"), function(tissue_name) {
 })
 names(tissue_objs) <- c("MNG", "dCLN")
 
-eps_grid <- c(0.05, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30)
-minPts_use <- 10
-min_cluster_size <- 20
+eps_grid <- sort(unique(c(
+  0.05, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30,
+  0.16, 0.17, 0.175
+)))
 
 summarize_dbscan_result <- function(tissue_name, eps_value, coords) {
   set.seed(1234)
@@ -263,9 +259,9 @@ write.csv(
   row.names = FALSE
 )
 
-# Selected after inspecting the eps scan for overfragmentation/noise at small eps
-# and collapse into dominant clusters at large eps.
-eps_use <- 0.20
+# Selected after scanning DBSCAN parameters for overfragmentation/noise at
+# smaller eps values, collapse into dominant clusters at larger eps values, and
+# recovery of the prior MNG_DBSCAN_2 B-cell program.
 
 assignment_list <- lapply(names(tissue_objs), function(tissue_name) {
   obj_tissue <- tissue_objs[[tissue_name]]
@@ -300,63 +296,133 @@ dbscan_assignments <- dplyr::bind_rows(assignment_list) |>
   dplyr::group_by(TissueGroup) |>
   dplyr::mutate(
     dbscan_posthoc_renumbered = renumber_dbscan_by_tissue(dbscan_posthoc),
-    tissue_dbscan_cluster_simple_eps020_min10_min21 = dplyr::if_else(
+    tissue_dbscan_cluster_simple = dplyr::if_else(
       dbscan_posthoc_renumbered == "DBSCAN_0",
       "DBSCAN_noise",
       dbscan_posthoc_renumbered
     ),
-    tissue_dbscan_cluster_eps020_min10_min21 = dplyr::if_else(
+    tissue_dbscan_cluster = dplyr::if_else(
       dbscan_posthoc_renumbered == "DBSCAN_0",
       paste0(TissueGroup, "_DBSCAN_noise"),
       paste0(TissueGroup, "_", dbscan_posthoc_renumbered)
     )
   ) |>
-  dplyr::ungroup()
+  dplyr::ungroup() |>
+  dplyr::rename(
+    !!cluster_simple_col := tissue_dbscan_cluster_simple,
+    !!cluster_col := tissue_dbscan_cluster
+  )
 
 dbscan_summary <- dbscan_assignments |>
-  dplyr::count(TissueGroup, tissue_dbscan_cluster_eps020_min10_min21, name = "n_cells") |>
+  dplyr::count(TissueGroup, .data[[cluster_col]], name = "n_cells") |>
   dplyr::group_by(TissueGroup) |>
   dplyr::mutate(cluster_fraction = n_cells / sum(n_cells)) |>
   dplyr::ungroup() |>
   dplyr::arrange(TissueGroup, dplyr::desc(n_cells))
 
-validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21 <- NA_character_
-validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21 <- NA_character_
-validated_bcell_obj$tissue_dbscan_cluster_simple_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(validated_bcell_obj))
-] <- dbscan_assignments$tissue_dbscan_cluster_simple_eps020_min10_min21
-validated_bcell_obj$tissue_dbscan_cluster_eps020_min10_min21[
-  match(dbscan_assignments$cell, colnames(validated_bcell_obj))
-] <- dbscan_assignments$tissue_dbscan_cluster_eps020_min10_min21
+validated_bcell_obj[[cluster_simple_col]] <- NA_character_
+validated_bcell_obj[[cluster_col]] <- NA_character_
+validated_bcell_obj@meta.data[dbscan_assignments$cell, cluster_simple_col] <-
+  dbscan_assignments[[cluster_simple_col]]
+validated_bcell_obj@meta.data[dbscan_assignments$cell, cluster_col] <-
+  dbscan_assignments[[cluster_col]]
+
+full_obj[[cluster_simple_col]] <- NA_character_
+full_obj[[cluster_col]] <- NA_character_
+full_obj@meta.data[dbscan_assignments$cell, cluster_simple_col] <-
+  dbscan_assignments[[cluster_simple_col]]
+full_obj@meta.data[dbscan_assignments$cell, cluster_col] <-
+  dbscan_assignments[[cluster_col]]
+
+################################################################################
+# 4. Map DBSCAN labels back to B-cell celltype_minor in the global object
+################################################################################
+
+if (anyDuplicated(dbscan_assignments$cell) > 0) {
+  stop("Duplicated cell barcodes found in DBSCAN assignments.", call. = FALSE)
+}
+
+missing_from_full <- setdiff(dbscan_assignments$cell, colnames(full_obj))
+missing_from_bcell <- setdiff(dbscan_assignments$cell, colnames(validated_bcell_obj))
+if (length(missing_from_full) > 0 || length(missing_from_bcell) > 0) {
+  stop(
+    "DBSCAN assignments do not align with saved objects. Missing from full object: ",
+    length(missing_from_full),
+    "; missing from B-cell object: ",
+    length(missing_from_bcell),
+    call. = FALSE
+  )
+}
+
+if (!bcell_minor_backup_col %in% colnames(full_obj@meta.data)) {
+  full_obj[[bcell_minor_backup_col]] <- full_obj$celltype_minor
+}
+if (!bcell_minor_backup_col %in% colnames(validated_bcell_obj@meta.data)) {
+  validated_bcell_obj[[bcell_minor_backup_col]] <- validated_bcell_obj$celltype_minor
+}
+
+full_obj@meta.data[dbscan_assignments$cell, "celltype_minor"] <-
+  dbscan_assignments[[cluster_col]]
+validated_bcell_obj@meta.data[dbscan_assignments$cell, "celltype_minor"] <-
+  dbscan_assignments[[cluster_col]]
+
+if (any(is.na(full_obj@meta.data[dbscan_assignments$cell, "celltype_minor"]))) {
+  stop("Some B cells still have missing celltype_minor after DBSCAN mapping.", call. = FALSE)
+}
+if (!all(full_obj@meta.data[dbscan_assignments$cell, "celltype_minor"] ==
+         full_obj@meta.data[dbscan_assignments$cell, cluster_col])) {
+  stop("B-cell celltype_minor does not match DBSCAN labels after mapping.", call. = FALSE)
+}
+
+cat("\n====================\n")
+cat("B-cell celltype_minor after DBSCAN mapping\n")
+cat("====================\n")
+print(table(full_obj@meta.data[dbscan_assignments$cell, "celltype_minor"], useNA = "ifany"))
+
+bcell_metadata_with_dbscan <- full_obj@meta.data[dbscan_assignments$cell, , drop = FALSE]
+bcell_metadata_with_dbscan$cell <- rownames(bcell_metadata_with_dbscan)
 
 write.csv(
   dbscan_assignments,
-  file.path(dbscan_dir, "bcell_dbscan_eps020_min10_assignments.csv"),
+  file.path(dbscan_dir, "bcell_dbscan_eps017_min5_min31_assignments.csv"),
   row.names = FALSE
 )
 write.csv(
   dbscan_summary,
-  file.path(dbscan_dir, "bcell_dbscan_eps020_min10_summary.csv"),
+  file.path(dbscan_dir, "bcell_dbscan_eps017_min5_min31_summary.csv"),
+  row.names = FALSE
+)
+write.csv(
+  bcell_metadata_with_dbscan,
+  file.path(dbscan_dir, "validated_bcell_metadata_with_dbscan_eps017_min5_min31.csv"),
   row.names = FALSE
 )
 saveRDS(
   validated_bcell_obj,
-  file.path(dbscan_dir, "validated_bcell_obj_tissue_dbscan_eps020_min10_min21.rds")
+  file.path(dbscan_dir, "validated_bcell_obj_tissue_dbscan_eps017_min5_min31.rds")
+)
+saveRDS(
+  full_obj,
+  file.path(dbscan_dir, "srt_fullannot_with_bcell_dbscan_eps017_min5_min31.rds")
+)
+saveRDS(
+  full_obj,
+  full_with_dbscan_rds
 )
 saveRDS(
   tissue_objs,
-  file.path(dbscan_dir, "tissuewise_fixed_umap_objects.rds")
+  file.path(dbscan_dir, "tissuewise_noig_umap_objects_eps017_min5_min31.rds")
 )
 
 dbscan_plot_df <- dbscan_assignments |>
   dplyr::mutate(
-    draw_order = ifelse(grepl("DBSCAN_noise$", tissue_dbscan_cluster_eps020_min10_min21), 1, 2)
+    draw_order = ifelse(grepl("DBSCAN_noise$", .data[[cluster_col]]), 1, 2)
   ) |>
   dplyr::arrange(draw_order)
 
 dbscan_plot <- ggplot(
   dbscan_plot_df,
-  aes(UMAP_1, UMAP_2, color = tissue_dbscan_cluster_eps020_min10_min21)
+  aes(UMAP_1, UMAP_2, color = .data[[cluster_col]])
 ) +
   geom_point(size = 0.2) +
   facet_wrap(~ TissueGroup, scales = "free") +
@@ -370,13 +436,13 @@ dbscan_plot <- ggplot(
 
 save_tiff_plot(
   dbscan_plot,
-  file.path(dbscan_dir, "bcell_tissuewise_dbscan_eps020_min10.tiff"),
+  file.path(dbscan_dir, "bcell_tissuewise_dbscan_eps017_min5_min31.tiff"),
   width = 8,
   height = 4
 )
 
 ################################################################################
-# 4. DBSCAN programs to test
+# 5. DBSCAN programs to test
 ################################################################################
 
 obj <- tryCatch(
@@ -414,7 +480,7 @@ write.csv(
 )
 
 ################################################################################
-# 5. Top-50 signatures within tissue
+# 6. Top-50 signatures within tissue
 ################################################################################
 
 run_one_signature <- function(i, obj, job_df, tissue_col, cluster_col) {
@@ -515,7 +581,7 @@ program_gene_list <- lapply(program_gene_list, unique)
 program_ids <- program_meta_use$program_id
 
 ################################################################################
-# 6. Pairwise overlap, Fisher tests, and hierarchical clustering
+# 7. Pairwise overlap, Fisher tests, and hierarchical clustering
 ################################################################################
 
 pair_index <- utils::combn(program_ids, 2, simplify = FALSE)
@@ -649,7 +715,7 @@ write.csv(
 )
 
 ################################################################################
-# 7. Shared versus tissue-restricted program calls
+# 8. Shared versus tissue-restricted program calls
 ################################################################################
 
 nearest_cross_tissue <- dplyr::bind_rows(lapply(program_ids, function(pid) {
@@ -704,7 +770,7 @@ write.csv(
 )
 
 ################################################################################
-# 8. Plots
+# 9. Plots
 ################################################################################
 
 overlap_df <- as.data.frame(as.table(overlap_mat[ordered_ids, ordered_ids]))
@@ -753,5 +819,7 @@ dev.off()
 cat("\n====================\n")
 cat("Saved B-cell DBSCAN outputs to:\n")
 cat(dbscan_dir, "\n")
+cat("Saved full annotated object with B-cell DBSCAN labels to:\n")
+cat(full_with_dbscan_rds, "\n")
 cat("Saved DBSCAN program analysis outputs to:\n")
 cat(program_out_dir, "\n")
