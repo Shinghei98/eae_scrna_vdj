@@ -143,16 +143,39 @@ p_umap <- ggplot(plot_df, aes(UMAP_1, UMAP_2, color = plot_celltype)) +
 legend_direct_df <- tibble(
   plot_celltype = levels(plot_df$plot_celltype),
   label = levels(plot_df$plot_celltype),
-  x_dot = 0.592,
-  x_label = 0.635,
-  y = 0.692 - (seq_along(levels(plot_df$plot_celltype)) - 1) * 0.056
+  x_dot = 0.595,
+  x_label = 0.636,
+  y = 0.675 - (seq_along(levels(plot_df$plot_celltype)) - 1) * 0.065
 )
 
 final_plot <- ggdraw() +
-  draw_plot(p_umap, x = 0.019, y = 0.107, width = 0.525, height = 0.825) +
+  draw_plot(p_umap, x = -0.071, y = 0.043, width = 0.698, height = 0.829) +
   draw_line(
-    c(0.079, 0.079, 0.174),
-    c(0.313, 0.141, 0.141),
+    c(0.179, 0.248),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_label(
+    "All cells",
+    x = 0.329,
+    y = 0.911,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 23.5
+  ) +
+  draw_line(
+    c(0.409, 0.479),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_line(
+    c(0.059, 0.059, 0.147),
+    c(0.231, 0.105, 0.105),
     color = "black",
     linewidth = 1.35,
     lineend = "butt",
@@ -160,8 +183,8 @@ final_plot <- ggdraw() +
   ) +
   draw_label(
     "UMAP1",
-    x = 0.129,
-    y = 0.112,
+    x = 0.103,
+    y = 0.078,
     hjust = 0.5,
     vjust = 0.5,
     fontface = "bold",
@@ -169,8 +192,8 @@ final_plot <- ggdraw() +
   ) +
   draw_label(
     "UMAP2",
-    x = 0.060,
-    y = 0.220,
+    x = 0.043,
+    y = 0.166,
     angle = 90,
     hjust = 0.5,
     vjust = 0.5,
@@ -178,31 +201,17 @@ final_plot <- ggdraw() +
     size = 15.5
   ) +
   draw_line(
-    c(0.552, 0.552, 0.922, 0.922),
-    c(0.778, 0.289, 0.289, 0.778),
+    c(0.611, 0.551, 0.551, 0.941, 0.941, 0.881),
+    c(0.768, 0.768, 0.231, 0.231, 0.768, 0.768),
     color = "black",
     linewidth = 1.75,
     lineend = "butt",
     linejoin = "mitre"
   ) +
-  draw_line(
-    c(0.552, 0.610),
-    c(0.778, 0.778),
-    color = "black",
-    linewidth = 1.75,
-    lineend = "butt"
-  ) +
-  draw_line(
-    c(0.860, 0.922),
-    c(0.778, 0.778),
-    color = "black",
-    linewidth = 1.75,
-    lineend = "butt"
-  ) +
   draw_label(
-    "Legend b (all cells)",
-    x = 0.736,
-    y = 0.778,
+    "Legend b (All cells)",
+    x = 0.747,
+    y = 0.768,
     hjust = 0.5,
     vjust = 0.5,
     fontface = "bold",
@@ -236,7 +245,7 @@ ggsave(
   filename = out_tiff,
   plot = final_plot,
   width = 9.14,
-  height = 5.24,
+  height = 5.50,
   dpi = 300,
   bg = "white",
   compression = "lzw"
