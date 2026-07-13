@@ -352,7 +352,7 @@ for (i in seq_len(nrow(sample_figures))) {
 }
 
 ################################################################################
-# Figure 1c1: T-cell-only UMAP colored by minor cell type
+# T-cell-only reclustering for Figures 1b6 and 1c1
 ################################################################################
 
 if (!"celltype_minor" %in% colnames(obj@meta.data)) {
@@ -500,6 +500,137 @@ tcell_x_range <- range(tcell_plot_df$UMAP_1, na.rm = TRUE)
 tcell_y_range <- range(tcell_plot_df$UMAP_2, na.rm = TRUE)
 tcell_x_span <- diff(tcell_x_range)
 tcell_y_span <- diff(tcell_y_range)
+
+################################################################################
+# Figure 1b6: T-cell-only UMAP colored by minor cell type
+################################################################################
+
+p_tcell_umap_1b6 <- ggplot(tcell_plot_df, aes(UMAP_1, UMAP_2, color = celltype_minor)) +
+  geom_point(size = 0.62, alpha = 0.98, stroke = 0) +
+  scale_color_manual(values = tcell_minor_colors, drop = FALSE) +
+  coord_fixed(
+    xlim = c(tcell_x_range[1] - 0.055 * tcell_x_span, tcell_x_range[2] + 0.055 * tcell_x_span),
+    ylim = c(tcell_y_range[1] - 0.055 * tcell_y_span, tcell_y_range[2] + 0.055 * tcell_y_span),
+    ratio = 1,
+    expand = FALSE,
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 4, 3, 0)
+  )
+
+tcell_legend_direct_df <- tibble(
+  celltype_minor = levels(tcell_umap_df$celltype_minor),
+  label = unname(tcell_minor_labels),
+  x_dot = 0.595,
+  x_label = 0.636,
+  y = 0.691 - (seq_along(levels(tcell_umap_df$celltype_minor)) - 1) * 0.052
+)
+
+final_tcell_1b6_plot <- ggdraw() +
+  draw_plot(p_tcell_umap_1b6, x = -0.071, y = 0.043, width = 0.698, height = 0.829) +
+  draw_line(
+    c(0.179, 0.268),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_label(
+    "T cells",
+    x = 0.329,
+    y = 0.911,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 23.5
+  ) +
+  draw_line(
+    c(0.390, 0.479),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_line(
+    c(0.059, 0.059, 0.147),
+    c(0.231, 0.105, 0.105),
+    color = "black",
+    linewidth = 1.35,
+    lineend = "butt",
+    linejoin = "mitre"
+  ) +
+  draw_label(
+    "UMAP1",
+    x = 0.103,
+    y = 0.078,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  draw_label(
+    "UMAP2",
+    x = 0.043,
+    y = 0.166,
+    angle = 90,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  geom_point(
+    data = tcell_legend_direct_df,
+    aes(x = x_dot, y = y, fill = celltype_minor),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 5.3,
+    stroke = 0.12,
+    color = "white",
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = tcell_legend_direct_df,
+    aes(x = x_label, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 0.5,
+    size = 5.65,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_fill_manual(values = tcell_minor_colors, drop = FALSE)
+
+out_tcell_1b6_tiff <- file.path(output_dir, "figure_1b6.tiff")
+
+ggsave(
+  filename = out_tcell_1b6_tiff,
+  plot = final_tcell_1b6_plot,
+  width = 9.14,
+  height = 5.50,
+  dpi = 300,
+  bg = "white",
+  compression = "lzw"
+)
+
+write.csv(
+  tcell_count_df,
+  file.path(output_dir, "figure_1b6_tcell_celltype_minor_counts_and_palette.csv"),
+  row.names = FALSE
+)
+
+cat("figure_1b6 T cells plotted:", nrow(tcell_plot_df), "\n")
+cat("T-cell clusters:", length(unique(tcell_obj$tcell_only_cluster_pc10_k30_res04)), "\n")
+cat("Legend groups:", length(levels(tcell_umap_df$celltype_minor)), "\n")
+cat("Saved:\n")
+cat(out_tcell_1b6_tiff, "\n")
+cat(file.path(output_dir, "figure_1b6_tcell_celltype_minor_counts_and_palette.csv"), "\n")
+
+################################################################################
+# Figure 1c1: T-cell-only UMAP colored by minor cell type
+################################################################################
 
 tcell_axis_x0 <- tcell_x_range[1] - 0.115 * tcell_x_span
 tcell_axis_y0 <- tcell_y_range[1] - 0.070 * tcell_y_span
