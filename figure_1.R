@@ -145,7 +145,7 @@ legend_direct_df <- tibble(
   label = levels(plot_df$plot_celltype),
   x_dot = 0.595,
   x_label = 0.636,
-  y = 0.675 - (seq_along(levels(plot_df$plot_celltype)) - 1) * 0.065
+  y = 0.691 - (seq_along(levels(plot_df$plot_celltype)) - 1) * 0.052
 )
 
 final_plot <- ggdraw() +
@@ -202,7 +202,7 @@ final_plot <- ggdraw() +
   ) +
   draw_line(
     c(0.611, 0.551, 0.551, 0.941, 0.941, 0.881),
-    c(0.768, 0.768, 0.231, 0.231, 0.768, 0.768),
+    c(0.768, 0.768, 0.320, 0.320, 0.768, 0.768),
     color = "black",
     linewidth = 1.75,
     lineend = "butt",
