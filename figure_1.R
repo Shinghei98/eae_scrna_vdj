@@ -25,7 +25,7 @@ obj <- if (file.exists(qs_file) && requireNamespace("qs", quietly = TRUE)) {
   readRDS(rds_file)
 }
 
-required_meta_cols <- c("celltype_major", "sample_id")
+required_meta_cols <- c("celltype_major", "celltype_minor", "sample_id")
 missing_meta_cols <- setdiff(required_meta_cols, colnames(obj@meta.data))
 if (length(missing_meta_cols) > 0) {
   stop("Missing metadata columns: ", paste(missing_meta_cols, collapse = ", "))
@@ -38,6 +38,7 @@ umap_df <- as.data.frame(Embeddings(obj, reduction = "umap"))
 colnames(umap_df)[1:2] <- c("UMAP_1", "UMAP_2")
 umap_df$cell <- rownames(umap_df)
 umap_df$celltype_major <- as.character(obj$celltype_major)
+umap_df$celltype_minor <- as.character(obj$celltype_minor)
 umap_df$sample_id <- obj@meta.data[umap_df$cell, "sample_id", drop = TRUE]
 umap_df$sample_panel <- dplyr::recode(
   umap_df$sample_id,
@@ -51,6 +52,7 @@ umap_df$sample_panel <- dplyr::recode(
 umap_df$plot_celltype <- dplyr::case_when(
   umap_df$celltype_major %in% c("CD4_T", "CD8_T", "UNC_T", "T_cell") ~ "T cells",
   umap_df$celltype_major == "B_cell" ~ "B cells",
+  umap_df$celltype_major == "Neutrophil" & umap_df$celltype_minor == "cycling_neutrophil" ~ "Cycling Neutrophil",
   umap_df$celltype_major == "Neutrophil" ~ "Neutrophil",
   umap_df$celltype_major == "macrophage/microglia" ~ "Macrophage/microglia",
   umap_df$celltype_major == "DC" ~ "DC",
@@ -64,6 +66,7 @@ celltype_levels <- c(
   "B cells",
   "T cells",
   "Neutrophil",
+  "Cycling Neutrophil",
   "Monocyte",
   "Macrophage/microglia",
   "DC",
@@ -80,6 +83,7 @@ celltype_colors <- c(
   "B cells" = "#159DC1",
   "T cells" = "#C8192E",
   "Neutrophil" = "#D18A00",
+  "Cycling Neutrophil" = "#E6C229",
   "Macrophage/microglia" = "#5E49A8",
   "DC" = "#1F68B3",
   "NK cell" = "#3F9D43",
@@ -202,7 +206,7 @@ final_plot <- ggdraw() +
   ) +
   draw_line(
     c(0.611, 0.551, 0.551, 0.941, 0.941, 0.881),
-    c(0.768, 0.768, 0.320, 0.320, 0.768, 0.768),
+    c(0.768, 0.768, 0.268, 0.268, 0.768, 0.768),
     color = "black",
     linewidth = 1.75,
     lineend = "butt",
