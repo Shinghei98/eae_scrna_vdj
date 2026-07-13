@@ -629,6 +629,261 @@ cat(out_tcell_1b6_tiff, "\n")
 cat(file.path(output_dir, "figure_1b6_tcell_celltype_minor_counts_and_palette.csv"), "\n")
 
 ################################################################################
+# Figure 1b7: macrophage/microglia-only UMAP colored by minor cell type
+################################################################################
+
+macrophage_major_value <- "macrophage/microglia"
+macrophage_cells <- rownames(obj@meta.data)[obj$celltype_major == macrophage_major_value]
+
+if (length(macrophage_cells) == 0) {
+  stop("No macrophage/microglia cells found using celltype_major value: ", macrophage_major_value)
+}
+
+macrophage_obj <- subset(obj, cells = macrophage_cells)
+DefaultAssay(macrophage_obj) <- "RNA"
+macrophage_obj <- tryCatch(
+  JoinLayers(macrophage_obj, assay = "RNA"),
+  error = function(e) macrophage_obj
+)
+
+set.seed(1234)
+macrophage_obj <- NormalizeData(macrophage_obj, assay = "RNA", verbose = FALSE)
+
+set.seed(1234)
+macrophage_obj <- FindVariableFeatures(
+  macrophage_obj,
+  assay = "RNA",
+  selection.method = "vst",
+  nfeatures = 2000,
+  verbose = FALSE
+)
+
+set.seed(1234)
+macrophage_obj <- ScaleData(
+  macrophage_obj,
+  assay = "RNA",
+  features = VariableFeatures(macrophage_obj),
+  verbose = FALSE
+)
+
+set.seed(1234)
+macrophage_obj <- RunPCA(
+  macrophage_obj,
+  assay = "RNA",
+  features = VariableFeatures(macrophage_obj),
+  npcs = 10,
+  verbose = FALSE
+)
+
+set.seed(1234)
+macrophage_obj <- FindNeighbors(
+  macrophage_obj,
+  dims = 1:10,
+  k.param = 30,
+  verbose = FALSE
+)
+
+set.seed(1234)
+macrophage_obj <- FindClusters(
+  macrophage_obj,
+  resolution = 0.6,
+  verbose = FALSE
+)
+macrophage_obj$macrophage_microglia_cluster_pc10_k30_res06 <- as.character(Idents(macrophage_obj))
+
+set.seed(1234)
+macrophage_obj <- RunUMAP(
+  macrophage_obj,
+  dims = 1:10,
+  n.neighbors = 30,
+  seed.use = 1234,
+  verbose = FALSE
+)
+
+macrophage_umap_df <- as.data.frame(Embeddings(macrophage_obj, reduction = "umap"))
+colnames(macrophage_umap_df)[1:2] <- c("UMAP_1", "UMAP_2")
+macrophage_umap_df$cell <- rownames(macrophage_umap_df)
+macrophage_umap_df$celltype_minor <- as.character(macrophage_obj$celltype_minor)
+
+macrophage_minor_levels <- c("macrophage", "DAM1", "DAM2")
+macrophage_minor_levels <- c(
+  macrophage_minor_levels[macrophage_minor_levels %in% unique(macrophage_umap_df$celltype_minor)],
+  sort(setdiff(unique(macrophage_umap_df$celltype_minor), macrophage_minor_levels))
+)
+macrophage_umap_df$celltype_minor <- factor(
+  macrophage_umap_df$celltype_minor,
+  levels = macrophage_minor_levels
+)
+
+macrophage_minor_labels <- c(
+  "macrophage" = "Macrophages",
+  "DAM1" = "DAM1",
+  "DAM2" = "DAM2"
+)
+missing_macrophage_labels <- setdiff(levels(macrophage_umap_df$celltype_minor), names(macrophage_minor_labels))
+if (length(missing_macrophage_labels) > 0) {
+  macrophage_minor_labels <- c(
+    macrophage_minor_labels,
+    setNames(gsub("_", " ", missing_macrophage_labels), missing_macrophage_labels)
+  )
+}
+macrophage_minor_labels <- macrophage_minor_labels[levels(macrophage_umap_df$celltype_minor)]
+
+macrophage_minor_colors <- c(
+  "macrophage" = "#A95524",
+  "DAM1" = "#5E49A8",
+  "DAM2" = "#159DC1"
+)
+missing_macrophage_colors <- setdiff(levels(macrophage_umap_df$celltype_minor), names(macrophage_minor_colors))
+if (length(missing_macrophage_colors) > 0) {
+  macrophage_minor_colors <- c(
+    macrophage_minor_colors,
+    setNames(grDevices::hcl.colors(length(missing_macrophage_colors), palette = "Dark 3"), missing_macrophage_colors)
+  )
+}
+macrophage_minor_colors <- macrophage_minor_colors[levels(macrophage_umap_df$celltype_minor)]
+
+macrophage_count_df <- macrophage_umap_df |>
+  count(celltype_minor, name = "n_cells") |>
+  mutate(
+    label = macrophage_minor_labels[as.character(celltype_minor)],
+    color = macrophage_minor_colors[as.character(celltype_minor)]
+  )
+
+macrophage_plot_df <- macrophage_umap_df |>
+  left_join(macrophage_count_df |> select(celltype_minor, n_cells), by = "celltype_minor") |>
+  arrange(desc(n_cells))
+
+macrophage_x_range <- range(macrophage_plot_df$UMAP_1, na.rm = TRUE)
+macrophage_y_range <- range(macrophage_plot_df$UMAP_2, na.rm = TRUE)
+macrophage_x_span <- diff(macrophage_x_range)
+macrophage_y_span <- diff(macrophage_y_range)
+
+p_macrophage_umap_1b7 <- ggplot(macrophage_plot_df, aes(UMAP_1, UMAP_2, color = celltype_minor)) +
+  geom_point(size = 0.82, alpha = 0.98, stroke = 0) +
+  scale_color_manual(values = macrophage_minor_colors, drop = FALSE) +
+  coord_fixed(
+    xlim = c(macrophage_x_range[1] - 0.060 * macrophage_x_span, macrophage_x_range[2] + 0.060 * macrophage_x_span),
+    ylim = c(macrophage_y_range[1] - 0.060 * macrophage_y_span, macrophage_y_range[2] + 0.060 * macrophage_y_span),
+    ratio = 1,
+    expand = FALSE,
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 4, 3, 0)
+  )
+
+macrophage_legend_direct_df <- tibble(
+  celltype_minor = levels(macrophage_umap_df$celltype_minor),
+  label = unname(macrophage_minor_labels),
+  x_dot = 0.595,
+  x_label = 0.636,
+  y = 0.660 - (seq_along(levels(macrophage_umap_df$celltype_minor)) - 1) * 0.065
+)
+
+final_macrophage_1b7_plot <- ggdraw() +
+  draw_plot(p_macrophage_umap_1b7, x = 0.050, y = 0.155, width = 0.500, height = 0.700) +
+  draw_line(
+    c(0.130, 0.213),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_label(
+    "Macrophages/\nMicroglia",
+    x = 0.329,
+    y = 0.907,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 21.0,
+    lineheight = 0.84
+  ) +
+  draw_line(
+    c(0.445, 0.528),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_line(
+    c(0.059, 0.059, 0.147),
+    c(0.231, 0.105, 0.105),
+    color = "black",
+    linewidth = 1.35,
+    lineend = "butt",
+    linejoin = "mitre"
+  ) +
+  draw_label(
+    "UMAP1",
+    x = 0.103,
+    y = 0.078,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  draw_label(
+    "UMAP2",
+    x = 0.043,
+    y = 0.166,
+    angle = 90,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  geom_point(
+    data = macrophage_legend_direct_df,
+    aes(x = x_dot, y = y, fill = celltype_minor),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 5.3,
+    stroke = 0.12,
+    color = "white",
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = macrophage_legend_direct_df,
+    aes(x = x_label, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 0.5,
+    size = 5.65,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_fill_manual(values = macrophage_minor_colors, drop = FALSE)
+
+out_macrophage_1b7_tiff <- file.path(output_dir, "figure_1b7.tiff")
+
+ggsave(
+  filename = out_macrophage_1b7_tiff,
+  plot = final_macrophage_1b7_plot,
+  width = 9.14,
+  height = 5.50,
+  dpi = 300,
+  bg = "white",
+  compression = "lzw"
+)
+
+write.csv(
+  macrophage_count_df,
+  file.path(output_dir, "figure_1b7_macrophage_microglia_celltype_minor_counts_and_palette.csv"),
+  row.names = FALSE
+)
+
+cat("figure_1b7 macrophage/microglia cells plotted:", nrow(macrophage_plot_df), "\n")
+cat("Macrophage/microglia clusters:", length(unique(macrophage_obj$macrophage_microglia_cluster_pc10_k30_res06)), "\n")
+cat("Legend groups:", length(levels(macrophage_umap_df$celltype_minor)), "\n")
+cat("Saved:\n")
+cat(out_macrophage_1b7_tiff, "\n")
+cat(file.path(output_dir, "figure_1b7_macrophage_microglia_celltype_minor_counts_and_palette.csv"), "\n")
+
+################################################################################
 # Figure 1c1: T-cell-only UMAP colored by minor cell type
 ################################################################################
 
