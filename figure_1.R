@@ -884,6 +884,255 @@ cat(out_macrophage_1b7_tiff, "\n")
 cat(file.path(output_dir, "figure_1b7_macrophage_microglia_celltype_minor_counts_and_palette.csv"), "\n")
 
 ################################################################################
+# Figure 1b8: DC-only UMAP colored by minor cell type
+################################################################################
+
+dc_major_value <- "DC"
+dc_cells <- rownames(obj@meta.data)[obj$celltype_major == dc_major_value]
+
+if (length(dc_cells) == 0) {
+  stop("No DC cells found using celltype_major value: ", dc_major_value)
+}
+
+dc_obj <- subset(obj, cells = dc_cells)
+DefaultAssay(dc_obj) <- "RNA"
+dc_obj <- tryCatch(
+  JoinLayers(dc_obj, assay = "RNA"),
+  error = function(e) dc_obj
+)
+
+set.seed(1234)
+dc_obj <- NormalizeData(dc_obj, assay = "RNA", verbose = FALSE)
+
+set.seed(1234)
+dc_obj <- FindVariableFeatures(
+  dc_obj,
+  assay = "RNA",
+  selection.method = "vst",
+  nfeatures = 2000,
+  verbose = FALSE
+)
+
+set.seed(1234)
+dc_obj <- ScaleData(
+  dc_obj,
+  assay = "RNA",
+  features = VariableFeatures(dc_obj),
+  verbose = FALSE
+)
+
+set.seed(1234)
+dc_obj <- RunPCA(
+  dc_obj,
+  assay = "RNA",
+  features = VariableFeatures(dc_obj),
+  npcs = 15,
+  verbose = FALSE
+)
+
+set.seed(1234)
+dc_obj <- FindNeighbors(
+  dc_obj,
+  dims = 1:15,
+  k.param = 30,
+  verbose = FALSE
+)
+
+set.seed(1234)
+dc_obj <- FindClusters(
+  dc_obj,
+  resolution = 0.8,
+  verbose = FALSE
+)
+dc_obj$dc_cluster_pc15_k30_res08 <- as.character(Idents(dc_obj))
+
+set.seed(1234)
+dc_obj <- RunUMAP(
+  dc_obj,
+  dims = 1:15,
+  n.neighbors = 30,
+  seed.use = 1234,
+  verbose = FALSE
+)
+
+dc_umap_df <- as.data.frame(Embeddings(dc_obj, reduction = "umap"))
+colnames(dc_umap_df)[1:2] <- c("UMAP_1", "UMAP_2")
+dc_umap_df$cell <- rownames(dc_umap_df)
+dc_umap_df$celltype_minor <- as.character(dc_obj$celltype_minor)
+
+dc_minor_levels <- c("migratory_DC", "non_migratory_DC")
+dc_minor_levels <- c(
+  dc_minor_levels[dc_minor_levels %in% unique(dc_umap_df$celltype_minor)],
+  sort(setdiff(unique(dc_umap_df$celltype_minor), dc_minor_levels))
+)
+dc_umap_df$celltype_minor <- factor(dc_umap_df$celltype_minor, levels = dc_minor_levels)
+
+dc_minor_labels <- c(
+  "migratory_DC" = "Migratory DC",
+  "non_migratory_DC" = "Non-migratory DC"
+)
+missing_dc_labels <- setdiff(levels(dc_umap_df$celltype_minor), names(dc_minor_labels))
+if (length(missing_dc_labels) > 0) {
+  dc_minor_labels <- c(
+    dc_minor_labels,
+    setNames(gsub("_", " ", missing_dc_labels), missing_dc_labels)
+  )
+}
+dc_minor_labels <- dc_minor_labels[levels(dc_umap_df$celltype_minor)]
+
+dc_minor_colors <- c(
+  "migratory_DC" = "#1F68B3",
+  "non_migratory_DC" = "#D18A00"
+)
+missing_dc_colors <- setdiff(levels(dc_umap_df$celltype_minor), names(dc_minor_colors))
+if (length(missing_dc_colors) > 0) {
+  dc_minor_colors <- c(
+    dc_minor_colors,
+    setNames(grDevices::hcl.colors(length(missing_dc_colors), palette = "Dark 3"), missing_dc_colors)
+  )
+}
+dc_minor_colors <- dc_minor_colors[levels(dc_umap_df$celltype_minor)]
+
+dc_count_df <- dc_umap_df |>
+  count(celltype_minor, name = "n_cells") |>
+  mutate(
+    label = dc_minor_labels[as.character(celltype_minor)],
+    color = dc_minor_colors[as.character(celltype_minor)]
+  )
+
+dc_plot_df <- dc_umap_df |>
+  left_join(dc_count_df |> select(celltype_minor, n_cells), by = "celltype_minor") |>
+  arrange(desc(n_cells))
+
+dc_x_range <- range(dc_plot_df$UMAP_1, na.rm = TRUE)
+dc_y_range <- range(dc_plot_df$UMAP_2, na.rm = TRUE)
+dc_x_span <- diff(dc_x_range)
+dc_y_span <- diff(dc_y_range)
+
+p_dc_umap_1b8 <- ggplot(dc_plot_df, aes(UMAP_1, UMAP_2, color = celltype_minor)) +
+  geom_point(size = 0.92, alpha = 0.98, stroke = 0) +
+  scale_color_manual(values = dc_minor_colors, drop = FALSE) +
+  coord_fixed(
+    xlim = c(dc_x_range[1] - 0.060 * dc_x_span, dc_x_range[2] + 0.060 * dc_x_span),
+    ylim = c(dc_y_range[1] - 0.060 * dc_y_span, dc_y_range[2] + 0.060 * dc_y_span),
+    ratio = 1,
+    expand = FALSE,
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 4, 3, 0)
+  )
+
+dc_legend_direct_df <- tibble(
+  celltype_minor = levels(dc_umap_df$celltype_minor),
+  label = unname(dc_minor_labels),
+  x_dot = 0.595,
+  x_label = 0.636,
+  y = 0.660 - (seq_along(levels(dc_umap_df$celltype_minor)) - 1) * 0.065
+)
+
+final_dc_1b8_plot <- ggdraw() +
+  draw_plot(p_dc_umap_1b8, x = 0.050, y = 0.155, width = 0.500, height = 0.700) +
+  draw_line(
+    c(0.179, 0.292),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_label(
+    "DC",
+    x = 0.329,
+    y = 0.911,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 23.5
+  ) +
+  draw_line(
+    c(0.366, 0.479),
+    c(0.911, 0.911),
+    color = "black",
+    linewidth = 1.55,
+    lineend = "butt"
+  ) +
+  draw_line(
+    c(0.059, 0.059, 0.147),
+    c(0.231, 0.105, 0.105),
+    color = "black",
+    linewidth = 1.35,
+    lineend = "butt",
+    linejoin = "mitre"
+  ) +
+  draw_label(
+    "UMAP1",
+    x = 0.103,
+    y = 0.078,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  draw_label(
+    "UMAP2",
+    x = 0.043,
+    y = 0.166,
+    angle = 90,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  geom_point(
+    data = dc_legend_direct_df,
+    aes(x = x_dot, y = y, fill = celltype_minor),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 5.3,
+    stroke = 0.12,
+    color = "white",
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = dc_legend_direct_df,
+    aes(x = x_label, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 0.5,
+    size = 5.65,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_fill_manual(values = dc_minor_colors, drop = FALSE)
+
+out_dc_1b8_tiff <- file.path(output_dir, "figure_1b8.tiff")
+
+ggsave(
+  filename = out_dc_1b8_tiff,
+  plot = final_dc_1b8_plot,
+  width = 9.14,
+  height = 5.50,
+  dpi = 300,
+  bg = "white",
+  compression = "lzw"
+)
+
+write.csv(
+  dc_count_df,
+  file.path(output_dir, "figure_1b8_dc_celltype_minor_counts_and_palette.csv"),
+  row.names = FALSE
+)
+
+cat("figure_1b8 DC cells plotted:", nrow(dc_plot_df), "\n")
+cat("DC clusters:", length(unique(dc_obj$dc_cluster_pc15_k30_res08)), "\n")
+cat("Legend groups:", length(levels(dc_umap_df$celltype_minor)), "\n")
+cat("Saved:\n")
+cat(out_dc_1b8_tiff, "\n")
+cat(file.path(output_dir, "figure_1b8_dc_celltype_minor_counts_and_palette.csv"), "\n")
+
+################################################################################
 # Figure 1c1: T-cell-only UMAP colored by minor cell type
 ################################################################################
 
