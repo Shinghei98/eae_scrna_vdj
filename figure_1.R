@@ -25,8 +25,10 @@ obj <- if (file.exists(qs_file) && requireNamespace("qs", quietly = TRUE)) {
   readRDS(rds_file)
 }
 
-if (!"celltype_major" %in% colnames(obj@meta.data)) {
-  stop("Missing metadata column: celltype_major")
+required_meta_cols <- c("celltype_major", "sample_id")
+missing_meta_cols <- setdiff(required_meta_cols, colnames(obj@meta.data))
+if (length(missing_meta_cols) > 0) {
+  stop("Missing metadata columns: ", paste(missing_meta_cols, collapse = ", "))
 }
 if (!"umap" %in% Reductions(obj)) {
   stop("The object does not contain a UMAP reduction named 'umap'.")
@@ -36,6 +38,15 @@ umap_df <- as.data.frame(Embeddings(obj, reduction = "umap"))
 colnames(umap_df)[1:2] <- c("UMAP_1", "UMAP_2")
 umap_df$cell <- rownames(umap_df)
 umap_df$celltype_major <- as.character(obj$celltype_major)
+umap_df$sample_id <- obj@meta.data[umap_df$cell, "sample_id", drop = TRUE]
+umap_df$sample_panel <- dplyr::recode(
+  umap_df$sample_id,
+  "MGI0279_1_Wu2020_M1-lib1" = "M1",
+  "MGI0279_1_Wu2020_M2-lib1" = "M2",
+  "MGI0279_1_Wu2020_L1-lib1" = "L1",
+  "MGI0279_1_Wu2020_L2-lib1" = "L2",
+  .default = as.character(umap_df$sample_id)
+)
 
 umap_df$plot_celltype <- dplyr::case_when(
   umap_df$celltype_major %in% c("CD4_T", "CD8_T", "UNC_T", "T_cell") ~ "T cells",
@@ -106,8 +117,8 @@ y_span <- diff(y_range)
 
 axis_x0 <- x_range[1] - 0.180 * x_span
 axis_y0 <- y_range[1] - 0.085 * y_span
-axis_x1 <- axis_x0 + 0.240 * x_span
-axis_y1 <- axis_y0 + 0.180 * y_span
+axis_x1 <- axis_x0 + 0.285 * x_span
+axis_y1 <- axis_y0 + 0.240 * y_span
 axis_df <- data.frame(
   x = c(axis_x1, axis_x0, axis_x0),
   y = c(axis_y0, axis_y0, axis_y1)
@@ -115,36 +126,6 @@ axis_df <- data.frame(
 
 p_umap <- ggplot(plot_df, aes(UMAP_1, UMAP_2, color = plot_celltype)) +
   geom_point(size = 0.42, alpha = 1, stroke = 0) +
-  geom_path(
-    data = axis_df,
-    aes(x = x, y = y),
-    inherit.aes = FALSE,
-    linewidth = 0.78,
-    lineend = "butt",
-    linejoin = "mitre",
-    color = "black"
-  ) +
-  annotate(
-    "text",
-    x = axis_x0,
-    y = axis_y0 - 0.018 * y_span,
-    label = "UMAP1",
-    hjust = 0,
-    vjust = 1,
-    size = 4.8,
-    fontface = "bold"
-  ) +
-  annotate(
-    "text",
-    x = axis_x0 - 0.060 * x_span,
-    y = axis_y0 + 0.002 * y_span,
-    label = "UMAP2",
-    angle = 90,
-    hjust = 0,
-    vjust = 1,
-    size = 4.8,
-    fontface = "bold"
-  ) +
   scale_color_manual(values = celltype_colors, drop = FALSE) +
   coord_fixed(
     xlim = c(axis_x0 - 0.050 * x_span, x_range[2] + 0.035 * x_span),
@@ -159,85 +140,97 @@ p_umap <- ggplot(plot_df, aes(UMAP_1, UMAP_2, color = plot_celltype)) +
     plot.margin = margin(0, 4, 3, 0)
   )
 
-legend_df <- tibble(
+legend_direct_df <- tibble(
   plot_celltype = levels(plot_df$plot_celltype),
   label = levels(plot_df$plot_celltype),
-  y = rev(seq(0.78, by = 0.96, length.out = length(levels(plot_df$plot_celltype))))
+  x_dot = 0.592,
+  x_label = 0.635,
+  y = 0.692 - (seq_along(levels(plot_df$plot_celltype)) - 1) * 0.056
 )
 
-legend_panel <- ggplot(legend_df) +
-  annotate("segment", x = 0, xend = 0, y = 0, yend = 7.90, linewidth = 0.82, color = "black") +
-  annotate("segment", x = 1, xend = 1, y = 0, yend = 7.90, linewidth = 0.82, color = "black") +
-  annotate("segment", x = 0, xend = 1, y = 0, yend = 0, linewidth = 0.82, color = "black") +
-  annotate("segment", x = 0, xend = 0.155, y = 7.90, yend = 7.90, linewidth = 0.82, color = "black") +
-  annotate("segment", x = 0.845, xend = 1, y = 7.90, yend = 7.90, linewidth = 0.82, color = "black") +
-  annotate("rect", xmin = 0.155, xmax = 0.845, ymin = 7.62, ymax = 8.16, fill = "white", color = NA) +
+final_plot <- ggdraw() +
+  draw_plot(p_umap, x = 0.019, y = 0.107, width = 0.525, height = 0.825) +
+  draw_line(
+    c(0.079, 0.079, 0.174),
+    c(0.313, 0.141, 0.141),
+    color = "black",
+    linewidth = 1.35,
+    lineend = "butt",
+    linejoin = "mitre"
+  ) +
+  draw_label(
+    "UMAP1",
+    x = 0.129,
+    y = 0.112,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  draw_label(
+    "UMAP2",
+    x = 0.060,
+    y = 0.220,
+    angle = 90,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 15.5
+  ) +
+  draw_line(
+    c(0.552, 0.552, 0.922, 0.922),
+    c(0.778, 0.289, 0.289, 0.778),
+    color = "black",
+    linewidth = 1.75,
+    lineend = "butt",
+    linejoin = "mitre"
+  ) +
+  draw_line(
+    c(0.552, 0.610),
+    c(0.778, 0.778),
+    color = "black",
+    linewidth = 1.75,
+    lineend = "butt"
+  ) +
+  draw_line(
+    c(0.860, 0.922),
+    c(0.778, 0.778),
+    color = "black",
+    linewidth = 1.75,
+    lineend = "butt"
+  ) +
+  draw_label(
+    "Legend b (all cells)",
+    x = 0.736,
+    y = 0.778,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 17.5
+  ) +
   geom_point(
-    aes(x = 0.110, y = y, fill = plot_celltype),
+    data = legend_direct_df,
+    aes(x = x_dot, y = y, fill = plot_celltype),
+    inherit.aes = FALSE,
     shape = 21,
-    size = 4.75,
+    size = 5.3,
     stroke = 0.12,
     color = "white",
     show.legend = FALSE
   ) +
   geom_text(
-    aes(x = 0.215, y = y, label = label),
+    data = legend_direct_df,
+    aes(x = x_label, y = y, label = label),
+    inherit.aes = FALSE,
     hjust = 0,
     vjust = 0.5,
-    size = 5.15,
+    size = 5.65,
     fontface = "bold",
     color = "black"
   ) +
-  annotate(
-    "text",
-    x = 0.50,
-    y = 7.90,
-    label = "Legend b (All cells)",
-    hjust = 0.5,
-    vjust = 0.5,
-    size = 5.70,
-    fontface = "bold",
-    color = "black"
-  ) +
-  scale_fill_manual(values = celltype_colors, drop = FALSE) +
-  coord_cartesian(
-    xlim = c(0, 1),
-    ylim = c(-0.02, 8.18),
-    expand = FALSE,
-    clip = "off"
-  ) +
-  theme_void(base_size = 12) +
-  theme(
-    plot.margin = margin(0, 0, 0, 0)
-  )
+  scale_fill_manual(values = celltype_colors, drop = FALSE)
 
-final_plot <- ggdraw() +
-  draw_plot(p_umap, x = 0.060, y = 0.070, width = 0.525, height = 0.825) +
-  draw_line(c(0.228, 0.294), c(0.932, 0.932), color = "black", linewidth = 1.12) +
-  draw_label(
-    "All cells",
-    x = 0.371,
-    y = 0.932,
-    hjust = 0.5,
-    vjust = 0.5,
-    fontface = "bold",
-    size = 20.0
-  ) +
-  draw_line(c(0.446, 0.513), c(0.932, 0.932), color = "black", linewidth = 1.12) +
-  draw_plot(legend_panel, x = 0.582, y = 0.256, width = 0.368, height = 0.552)
-
-out_png <- file.path(output_dir, "all_cells_umap_celltype_major_tcells_merged_template_fit.png")
-out_tiff <- file.path(output_dir, "all_cells_umap_celltype_major_tcells_merged_template_fit.tiff")
-
-ggsave(
-  filename = out_png,
-  plot = final_plot,
-  width = 9.14,
-  height = 5.24,
-  dpi = 100,
-  bg = "white",
-  device = ragg::agg_png
-)
+out_tiff <- file.path(output_dir, "figure_1b1.tiff")
 
 ggsave(
   filename = out_tiff,
@@ -252,6 +245,373 @@ ggsave(
 cat("Cells plotted:", nrow(plot_df), "\n")
 cat("Legend groups:", length(levels(plot_df$plot_celltype)), "\n")
 cat("Saved:\n")
-cat(out_png, "\n")
 cat(out_tiff, "\n")
 cat(file.path(output_dir, "all_cells_celltype_major_tcells_merged_counts_and_palette.csv"), "\n")
+
+################################################################################
+# Figures 1b2-1b5: sample-specific all-cell UMAPs
+################################################################################
+
+save_sample_umap_figure <- function(sample_name, figure_id) {
+  sample_df <- umap_df |>
+    filter(sample_panel == sample_name)
+
+  if (nrow(sample_df) == 0) {
+    stop("No cells found for sample panel: ", sample_name)
+  }
+
+  p_sample_umap <- ggplot(sample_df, aes(UMAP_1, UMAP_2)) +
+    geom_point(color = "#1F1F1F", size = 0.50, alpha = 1, stroke = 0) +
+    coord_fixed(
+      xlim = c(axis_x0 - 0.052 * x_span, x_range[2] + 0.034 * x_span),
+      ylim = c(axis_y0 - 0.073 * y_span, y_range[2] + 0.031 * y_span),
+      ratio = 1,
+      expand = FALSE,
+      clip = "off"
+    ) +
+    theme_void(base_size = 12) +
+    theme(
+      plot.margin = margin(0, 0, 0, 0)
+    )
+
+  final_sample_plot <- ggdraw() +
+    draw_plot(p_sample_umap, x = 0.092, y = 0.070, width = 0.817, height = 0.753) +
+    draw_line(c(0.347, 0.520), c(0.878, 0.878), color = "black", linewidth = 1.55) +
+    draw_label(
+      sample_name,
+      x = 0.573,
+      y = 0.878,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "bold",
+      size = 23.5
+    ) +
+    draw_line(c(0.624, 0.790), c(0.878, 0.878), color = "black", linewidth = 1.55) +
+    draw_line(
+      c(0.168, 0.168, 0.325),
+      c(0.277, 0.124, 0.124),
+      color = "black",
+      linewidth = 1.55,
+      lineend = "butt",
+      linejoin = "mitre"
+    ) +
+    draw_label(
+      "UMAP1",
+      x = 0.249,
+      y = 0.102,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "bold",
+      size = 15.5
+    ) +
+    draw_label(
+      "UMAP2",
+      x = 0.138,
+      y = 0.194,
+      angle = 90,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "bold",
+      size = 15.5
+    )
+
+  out_tiff_sample <- file.path(output_dir, paste0(figure_id, ".tiff"))
+
+  ggsave(
+    filename = out_tiff_sample,
+    plot = final_sample_plot,
+    width = 5.36,
+    height = 5.48,
+    dpi = 300,
+    bg = "white",
+    compression = "lzw"
+  )
+
+  cat(figure_id, sample_name, "cells plotted:", nrow(sample_df), "\n")
+  cat("Saved:\n")
+  cat(out_tiff_sample, "\n")
+}
+
+sample_figures <- data.frame(
+  sample_name = c("M1", "M2", "L1", "L2"),
+  figure_id = c("figure_1b2", "figure_1b3", "figure_1b4", "figure_1b5"),
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_len(nrow(sample_figures))) {
+  save_sample_umap_figure(sample_figures$sample_name[i], sample_figures$figure_id[i])
+}
+
+################################################################################
+# Figure 1c1: T-cell-only UMAP colored by minor cell type
+################################################################################
+
+if (!"celltype_minor" %in% colnames(obj@meta.data)) {
+  stop("Missing metadata column: celltype_minor")
+}
+
+tcell_major_values <- c("CD4_T", "CD8_T", "UNC_T", "T_cell")
+tcell_cells <- rownames(obj@meta.data)[obj$celltype_major %in% tcell_major_values]
+
+if (length(tcell_cells) == 0) {
+  stop("No T cells found using celltype_major values: ", paste(tcell_major_values, collapse = ", "))
+}
+
+tcell_obj <- subset(obj, cells = tcell_cells)
+DefaultAssay(tcell_obj) <- "RNA"
+tcell_obj <- tryCatch(
+  JoinLayers(tcell_obj, assay = "RNA"),
+  error = function(e) tcell_obj
+)
+
+set.seed(1234)
+tcell_obj <- NormalizeData(tcell_obj, assay = "RNA", verbose = FALSE)
+
+set.seed(1234)
+tcell_obj <- FindVariableFeatures(
+  tcell_obj,
+  assay = "RNA",
+  selection.method = "vst",
+  nfeatures = 2000,
+  verbose = FALSE
+)
+
+set.seed(1234)
+tcell_obj <- ScaleData(
+  tcell_obj,
+  assay = "RNA",
+  features = VariableFeatures(tcell_obj),
+  verbose = FALSE
+)
+
+set.seed(1234)
+tcell_obj <- RunPCA(
+  tcell_obj,
+  assay = "RNA",
+  features = VariableFeatures(tcell_obj),
+  npcs = 10,
+  verbose = FALSE
+)
+
+set.seed(1234)
+tcell_obj <- FindNeighbors(
+  tcell_obj,
+  dims = 1:10,
+  k.param = 30,
+  verbose = FALSE
+)
+
+set.seed(1234)
+tcell_obj <- FindClusters(
+  tcell_obj,
+  resolution = 0.4,
+  verbose = FALSE
+)
+tcell_obj$tcell_only_cluster_pc10_k30_res04 <- as.character(Idents(tcell_obj))
+
+set.seed(1234)
+tcell_obj <- RunUMAP(
+  tcell_obj,
+  dims = 1:10,
+  n.neighbors = 30,
+  seed.use = 1234,
+  verbose = FALSE
+)
+
+tcell_umap_df <- as.data.frame(Embeddings(tcell_obj, reduction = "umap"))
+colnames(tcell_umap_df)[1:2] <- c("UMAP_1", "UMAP_2")
+tcell_umap_df$cell <- rownames(tcell_umap_df)
+tcell_umap_df$celltype_minor <- as.character(tcell_obj$celltype_minor)
+
+tcell_minor_levels <- c(
+  "Th1",
+  "naive_CD8_T_cell",
+  "exhausted_CD8_T_cell",
+  "NK_like_CD8_T_cell",
+  "CD8_Treg",
+  "unconventional_T_cell"
+)
+tcell_minor_levels <- c(
+  tcell_minor_levels[tcell_minor_levels %in% unique(tcell_umap_df$celltype_minor)],
+  sort(setdiff(unique(tcell_umap_df$celltype_minor), tcell_minor_levels))
+)
+tcell_umap_df$celltype_minor <- factor(tcell_umap_df$celltype_minor, levels = tcell_minor_levels)
+
+tcell_minor_labels <- c(
+  "Th1" = "Th1",
+  "naive_CD8_T_cell" = "Naive CD8 T cell",
+  "exhausted_CD8_T_cell" = "Exhausted CD8 T cell",
+  "NK_like_CD8_T_cell" = "NK-like CD8 T cell",
+  "CD8_Treg" = "CD8 Treg",
+  "unconventional_T_cell" = "Unconventional T cell"
+)
+missing_tcell_labels <- setdiff(levels(tcell_umap_df$celltype_minor), names(tcell_minor_labels))
+if (length(missing_tcell_labels) > 0) {
+  tcell_minor_labels <- c(
+    tcell_minor_labels,
+    setNames(gsub("_", " ", missing_tcell_labels), missing_tcell_labels)
+  )
+}
+tcell_minor_labels <- tcell_minor_labels[levels(tcell_umap_df$celltype_minor)]
+
+tcell_minor_colors <- c(
+  "Th1" = "#A323A6",
+  "naive_CD8_T_cell" = "#4659B8",
+  "exhausted_CD8_T_cell" = "#C91F33",
+  "NK_like_CD8_T_cell" = "#1F78B4",
+  "CD8_Treg" = "#16864F",
+  "unconventional_T_cell" = "#43B5D8"
+)
+missing_tcell_colors <- setdiff(levels(tcell_umap_df$celltype_minor), names(tcell_minor_colors))
+if (length(missing_tcell_colors) > 0) {
+  tcell_minor_colors <- c(
+    tcell_minor_colors,
+    setNames(grDevices::hcl.colors(length(missing_tcell_colors), palette = "Dark 3"), missing_tcell_colors)
+  )
+}
+tcell_minor_colors <- tcell_minor_colors[levels(tcell_umap_df$celltype_minor)]
+
+tcell_count_df <- tcell_umap_df |>
+  count(celltype_minor, name = "n_cells") |>
+  mutate(
+    label = tcell_minor_labels[as.character(celltype_minor)],
+    color = tcell_minor_colors[as.character(celltype_minor)]
+  )
+write.csv(
+  tcell_count_df,
+  file.path(output_dir, "figure_1c1_tcell_celltype_minor_counts_and_palette.csv"),
+  row.names = FALSE
+)
+
+tcell_plot_df <- tcell_umap_df |>
+  left_join(tcell_count_df |> select(celltype_minor, n_cells), by = "celltype_minor") |>
+  arrange(desc(n_cells))
+
+tcell_x_range <- range(tcell_plot_df$UMAP_1, na.rm = TRUE)
+tcell_y_range <- range(tcell_plot_df$UMAP_2, na.rm = TRUE)
+tcell_x_span <- diff(tcell_x_range)
+tcell_y_span <- diff(tcell_y_range)
+
+tcell_axis_x0 <- tcell_x_range[1] - 0.115 * tcell_x_span
+tcell_axis_y0 <- tcell_y_range[1] - 0.070 * tcell_y_span
+tcell_axis_x1 <- tcell_axis_x0 + 0.210 * tcell_x_span
+tcell_axis_y1 <- tcell_axis_y0 + 0.215 * tcell_y_span
+tcell_axis_df <- data.frame(
+  x = c(tcell_axis_x1, tcell_axis_x0, tcell_axis_x0),
+  y = c(tcell_axis_y0, tcell_axis_y0, tcell_axis_y1)
+)
+
+p_tcell_umap <- ggplot(tcell_plot_df, aes(UMAP_1, UMAP_2, color = celltype_minor)) +
+  geom_point(size = 0.62, alpha = 0.98, stroke = 0) +
+  geom_path(
+    data = tcell_axis_df,
+    aes(x = x, y = y),
+    inherit.aes = FALSE,
+    linewidth = 0.86,
+    lineend = "butt",
+    linejoin = "mitre",
+    color = "black"
+  ) +
+  annotate(
+    "text",
+    x = tcell_axis_x0,
+    y = tcell_axis_y0 - 0.024 * tcell_y_span,
+    label = "UMAP1",
+    hjust = 0,
+    vjust = 1,
+    size = 5.2,
+    fontface = "bold"
+  ) +
+  annotate(
+    "text",
+    x = tcell_axis_x0 - 0.060 * tcell_x_span,
+    y = tcell_axis_y0 + 0.010 * tcell_y_span,
+    label = "UMAP2",
+    angle = 90,
+    hjust = 0,
+    vjust = 1,
+    size = 5.2,
+    fontface = "bold"
+  ) +
+  scale_color_manual(values = tcell_minor_colors, drop = FALSE) +
+  coord_fixed(
+    xlim = c(tcell_axis_x0 - 0.055 * tcell_x_span, tcell_x_range[2] + 0.050 * tcell_x_span),
+    ylim = c(tcell_axis_y0 - 0.075 * tcell_y_span, tcell_y_range[2] + 0.055 * tcell_y_span),
+    ratio = 1,
+    expand = FALSE,
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.margin = margin(0, 0, 0, 0)
+  )
+
+tcell_legend_df <- tibble(
+  celltype_minor = levels(tcell_umap_df$celltype_minor),
+  label = unname(tcell_minor_labels),
+  y = rev(seq(0.62, by = 0.82, length.out = length(levels(tcell_umap_df$celltype_minor))))
+)
+
+tcell_legend_panel <- ggplot(tcell_legend_df) +
+  geom_point(
+    aes(x = 0.08, y = y, fill = celltype_minor),
+    shape = 21,
+    size = 5.2,
+    stroke = 0.12,
+    color = "white",
+    show.legend = FALSE
+  ) +
+  geom_text(
+    aes(x = 0.19, y = y, label = label),
+    hjust = 0,
+    vjust = 0.5,
+    size = 5.4,
+    fontface = "bold",
+    color = "black"
+  ) +
+  scale_fill_manual(values = tcell_minor_colors, drop = FALSE) +
+  coord_cartesian(
+    xlim = c(0, 1.35),
+    ylim = c(0.28, max(tcell_legend_df$y) + 0.44),
+    expand = FALSE,
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.margin = margin(0, 0, 0, 0)
+  )
+
+final_tcell_plot <- ggdraw() +
+  draw_plot(p_tcell_umap, x = 0.055, y = 0.072, width = 0.585, height = 0.825) +
+  draw_line(c(0.145, 0.235), c(0.925, 0.925), color = "black", linewidth = 1.35) +
+  draw_label(
+    "Lymphoid",
+    x = 0.370,
+    y = 0.925,
+    hjust = 0.5,
+    vjust = 0.5,
+    fontface = "bold",
+    size = 28.0
+  ) +
+  draw_line(c(0.510, 0.600), c(0.925, 0.925), color = "black", linewidth = 1.35) +
+  draw_plot(tcell_legend_panel, x = 0.665, y = 0.315, width = 0.315, height = 0.505)
+
+out_tcell_tiff <- file.path(output_dir, "figure_1c1.tiff")
+
+ggsave(
+  filename = out_tcell_tiff,
+  plot = final_tcell_plot,
+  width = 9.46,
+  height = 5.30,
+  dpi = 300,
+  bg = "white",
+  compression = "lzw"
+)
+
+cat("figure_1c1 T cells plotted:", nrow(tcell_plot_df), "\n")
+cat("T-cell clusters:", length(unique(tcell_obj$tcell_only_cluster_pc10_k30_res04)), "\n")
+cat("Legend groups:", length(levels(tcell_umap_df$celltype_minor)), "\n")
+cat("Saved:\n")
+cat(out_tcell_tiff, "\n")
+cat(file.path(output_dir, "figure_1c1_tcell_celltype_minor_counts_and_palette.csv"), "\n")
