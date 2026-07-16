@@ -132,8 +132,6 @@ decompress_once <- function(src, dst) {
     if (length(block) == 0L) break
     writeBin(block, out_con)
   }
-  close(in_con)
-  close(out_con)
 }
 
 read_rds_auto <- function(path) {
