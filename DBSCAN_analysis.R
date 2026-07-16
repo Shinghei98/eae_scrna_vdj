@@ -112,12 +112,47 @@ strict_ig_regex <- paste0(
   "Igll)"
 )
 
-read_rds_auto <- function(path) {
-  if (grepl("\\.gz$", path, ignore.case = TRUE)) {
-    readRDS(gzfile(path, open = "rb"))
-  } else {
-    readRDS(path)
+is_gzip_file <- function(path) {
+  con <- file(path, open = "rb")
+  on.exit(close(con), add = TRUE)
+  bytes <- readBin(con, what = "raw", n = 2L)
+  length(bytes) == 2L && identical(as.integer(bytes), c(31L, 139L))
+}
+
+decompress_once <- function(src, dst) {
+  in_con <- gzfile(src, open = "rb")
+  out_con <- file(dst, open = "wb")
+  on.exit({
+    close(in_con)
+    close(out_con)
+  }, add = TRUE)
+
+  repeat {
+    block <- readBin(in_con, what = "raw", n = 1024L * 1024L)
+    if (length(block) == 0L) break
+    writeBin(block, out_con)
   }
+  close(in_con)
+  close(out_con)
+}
+
+read_rds_auto <- function(path) {
+  if (!grepl("\\.gz$", path, ignore.case = TRUE)) {
+    return(readRDS(path))
+  }
+
+  # The Storage3 Kolz file is gzip-wrapped twice. Decompress one layer to a
+  # temporary file, detect whether the result is another gzip stream, and then
+  # let readRDS consume the inner stream without loading it into a raw vector.
+  outer_tmp <- tempfile(fileext = ".rds-or-gz")
+  on.exit(unlink(outer_tmp), add = TRUE)
+  decompress_once(path, outer_tmp)
+
+  if (is_gzip_file(outer_tmp)) {
+    message("Detected nested gzip compression; reading the inner RDS stream.")
+    return(readRDS(gzfile(outer_tmp, open = "rb")))
+  }
+  readRDS(outer_tmp)
 }
 
 state_key <- function(dataset, minPts, eps) {
