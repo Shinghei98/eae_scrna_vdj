@@ -1193,7 +1193,7 @@ four_dataset_metadata <- four_dataset_metadata |>
   dplyr::left_join(merged_label_by_stable, by = "stable_label") |>
   dplyr::mutate(
     merged_label = ifelse(
-      grepl("_DBSCAN_unstable$", stable_label),
+      is.na(merged_label) | grepl("_DBSCAN_unstable$", stable_label),
       stable_label,
       merged_label
     )
