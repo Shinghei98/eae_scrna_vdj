@@ -375,12 +375,31 @@ if (length(missing_kolz_metadata) > 0L) {
   )
 }
 
-# These are the exact CNS definitions used for the final table:
-#   Th1  = sample == "Th1" and compartment == "CNS"
+# The Kolz object encodes the Th1 CNS transfer as sample == "Th1"; its
+# compartment field is not the correct Th1 selector (only one Th1 cell has the
+# literal value "CNS"). For Th17, the CNS filter remains part of the original
+# definition used for the final table.
+kolz_nonzero_rna <- rep(TRUE, nrow(kolz_md))
+names(kolz_nonzero_rna) <- rownames(kolz_md)
+kolz_counts <- tryCatch(
+  GetAssayData(kolz_full, assay = "RNA", layer = "counts"),
+  error = function(e) {
+    tryCatch(
+      GetAssayData(kolz_full, assay = "RNA", slot = "counts"),
+      error = function(e2) NULL
+    )
+  }
+)
+if (!is.null(kolz_counts)) {
+  kolz_nonzero_rna <- Matrix::colSums(kolz_counts) > 0
+}
+
+# Exact dataset definitions:
+#   Th1  = sample == "Th1" and nonzero RNA counts
 #   Th17 = orig.ident in M1/M2/M3 and compartment == "CNS"
 kolz_th1_cells <- rownames(kolz_md)[
   as.character(kolz_md$sample) == "Th1" &
-    toupper(as.character(kolz_md$compartment)) == "CNS"
+    kolz_nonzero_rna[rownames(kolz_md)]
 ]
 kolz_th17_cells <- rownames(kolz_md)[
   as.character(kolz_md$orig.ident) %in% c("M1", "M2", "M3") &
